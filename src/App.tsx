@@ -10,6 +10,7 @@ import { CartDrawer } from './components/CartDrawer';
 import { BrandLogo } from './components/BrandLogo';
 import { AtelierLocationsMap } from './components/AtelierLocationsMap';
 import { OrdersHistoryModal } from './components/OrdersHistoryModal';
+import { StaffPortalPage } from './components/StaffPortalPage';
 
 const CATEGORIES: CategoryKey[] = ['all', 'outerwear', 'tailoring', 'knitwear', 'shirts'];
 
@@ -41,6 +42,15 @@ export default function App() {
   const [toastText, setToastText] = useState<string | null>(null);
 
   const [isOrdersOpen, setIsOrdersOpen] = useState(false);
+  const [activeView, setActiveView] = useState<'store' | 'staff'>(() => {
+    try {
+      return window.location.hash === '#/staff' || window.location.hash === '#staff'
+        ? 'staff'
+        : 'store';
+    } catch {
+      return 'store';
+    }
+  });
   const [deliveryAddress, setDeliveryAddress] = useState('');
   const [deliveryAddressNonce, setDeliveryAddressNonce] = useState(0);
   const [isPickingCheckoutLocation, setIsPickingCheckoutLocation] = useState(false);
@@ -51,6 +61,30 @@ export default function App() {
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
 
   const t = TRANSLATIONS[lang];
+
+  useEffect(() => {
+    const onHashChange = () => {
+      const h = window.location.hash;
+      setActiveView(h === '#/staff' || h === '#staff' ? 'staff' : 'store');
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  const openStaffPortal = () => {
+    setActiveView('staff');
+    if (window.location.hash !== '#/staff') {
+      window.location.hash = '#/staff';
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const openStorefront = () => {
+    setActiveView('store');
+    if (window.location.hash === '#/staff' || window.location.hash === '#staff') {
+      window.location.hash = '#top';
+    }
+  };
 
   useEffect(() => {
     const onQuotaExceeded = () => setMapsQuotaExceeded(true);
@@ -184,14 +218,21 @@ export default function App() {
         theme={theme}
         t={t}
         cartCount={cartCount}
+        activeView={activeView}
         onToggleLang={() => setLang((prev) => (prev === 'ar' ? 'en' : 'ar'))}
         onToggleTheme={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
         onOpenCart={() => setIsCartOpen(true)}
         onOpenOrders={() => setIsOrdersOpen(true)}
+        onOpenStaffPortal={openStaffPortal}
+        onOpenStore={openStorefront}
       />
 
       <main className="flex-1">
-        {/* Section 1: Storefront Hero */}
+        {activeView === 'staff' ? (
+          <StaffPortalPage lang={lang} onBackToStore={openStorefront} />
+        ) : (
+          <>
+            {/* Section 1: Storefront Hero */}
         <section className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-12 sm:pt-10 sm:pb-16">
           <div className="relative overflow-hidden rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-[#13161C]">
             <div className="aspect-[16/10] sm:aspect-[16/9] lg:aspect-[21/9] w-full">
@@ -388,6 +429,8 @@ export default function App() {
             }}
           />
         </section>
+          </>
+        )}
       </main>
 
       {/* Clean Editorial Footer */}
@@ -399,6 +442,14 @@ export default function App() {
           </div>
 
           <div className="flex flex-wrap items-center gap-4 text-xs text-[#525866] dark:text-[#9CA3AF]">
+            <button
+              type="button"
+              onClick={openStaffPortal}
+              className="font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:underline whitespace-nowrap cursor-pointer"
+            >
+              {lang === 'ar' ? 'دخول الموظفين (جوجل)' : 'Staff Portal (Google Sign-In)'}
+            </button>
+            <span aria-hidden="true">·</span>
             <span>{t.footer.rights}</span>
           </div>
         </div>

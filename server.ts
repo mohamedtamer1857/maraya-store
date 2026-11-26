@@ -7,7 +7,23 @@ import dotenv from 'dotenv';
 import { optionalAuth, requireAuth } from './src/middleware/auth.ts';
 import type { AuthRequest } from './src/middleware/auth.ts';
 import { getOrCreateUser } from './src/db/users.ts';
-import { createOrderRecord, getOrdersForUid } from './src/db/orders.ts';
+import {
+  createOrderRecord,
+  getAllOrdersForStaff,
+  getOrdersForUid,
+  getSalesSummaryForStaff,
+  isValidOrderStatus,
+  updateOrderStatusByRef,
+} from './src/db/orders.ts';
+import {
+  deleteStaffMemberById,
+  getStaffMemberByEmail,
+  listStaffMembers,
+  normalizeRole,
+  updateStaffMemberById,
+  upsertStaffMember,
+} from './src/db/staff.ts';
+import type { StaffMemberDTO, StaffPermissionKey } from './src/db/staff.ts';
 
 dotenv.config();
 
@@ -255,6 +271,223 @@ app.post('/api/orders', optionalAuth, async (req: AuthRequest, res: Response) =>
   } catch (error: unknown) {
     console.error('Order persistence failed:', error);
     res.status(500).json({ error: 'Unable to save order right now.' });
+  }
+});
+
+async function resolveVerifiedStaff(
+  req: AuthRequest,
+  res: Response,
+  requiredPermission?: StaffPermissionKey
+): Promise<StaffMemberDTO | null> {
+  const email = typeof req.user?.email === 'string' ? req.user.email.trim().toLowerCase() : '';
+  const emailVerified = req.user?.email_verified === true;
+  if (!email || !emailVerified) {
+    res.status(403).json({ error: 'Verified Google account email is required for staff access.' });
+    return null;
+  }
+
+  const displayName = typeof req.user?.name === 'string' ? req.user.name : null;
+  const staff = await getStaffMemberByEmail(email, displayName);
+  if (!staff || !staff.isActive) {
+    res.status(403).json({
+      error: 'Access denied: Your Google account does not have active staff permissions.',
+    });
+    return null;
+  }
+
+  if (requiredPermission && !staff[requiredPermission]) {
+    res.status(403).json({
+      error: `Access denied: Missing required permission (${requiredPermission}).`,
+    });
+    return null;
+  }
+
+  return staff;
+}
+
+app.get('/api/staff/me', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const email = typeof req.user?.email === 'string' ? req.user.email.trim().toLowerCase() : '';
+    const emailVerified = req.user?.email_verified === true;
+    if (!email || !emailVerified) {
+      res.json({ isStaff: false, staff: null, email: email || null, emailVerified });
+      return;
+    }
+
+    const displayName = typeof req.user?.name === 'string' ? req.user.name : null;
+    const staff = await getStaffMemberByEmail(email, displayName);
+    if (!staff || !staff.isActive) {
+      res.json({ isStaff: false, staff: null, email, emailVerified });
+      return;
+    }
+
+    res.json({ isStaff: true, staff, email, emailVerified });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to verify staff profile.';
+    res.status(500).json({ error: message });
+  }
+});
+
+app.get('/api/staff/orders', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canViewOrders');
+    if (!staff) return;
+
+    const ordersList = await getAllOrdersForStaff();
+    res.json({ orders: ordersList });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to load staff orders.';
+    res.status(500).json({ error: message });
+  }
+});
+
+app.patch('/api/staff/orders/:orderRef/status', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canUpdateOrderStatus');
+    if (!staff) return;
+
+    const orderRef = typeof req.params.orderRef === 'string' ? req.params.orderRef.trim() : '';
+    if (!orderRef || orderRef.length > 40) {
+      res.status(400).json({ error: 'Invalid order reference.' });
+      return;
+    }
+
+    const body = req.body as { status?: unknown };
+    if (!isValidOrderStatus(body.status)) {
+      res.status(400).json({ error: 'Invalid order status value.' });
+      return;
+    }
+
+    const updated = await updateOrderStatusByRef(orderRef, body.status);
+    if (!updated) {
+      res.status(404).json({ error: 'Order not found.' });
+      return;
+    }
+
+    res.json({ order: updated });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to update order status.';
+    res.status(500).json({ error: message });
+  }
+});
+
+app.get('/api/staff/sales', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canViewSales');
+    if (!staff) return;
+
+    const summary = await getSalesSummaryForStaff();
+    res.json({ summary });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to compute sales summary.';
+    res.status(500).json({ error: message });
+  }
+});
+
+app.get('/api/staff/members', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canManageStaff');
+    if (!staff) return;
+
+    const members = await listStaffMembers();
+    res.json({ members });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to load staff members.';
+    res.status(500).json({ error: message });
+  }
+});
+
+app.post('/api/staff/members', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canManageStaff');
+    if (!staff) return;
+
+    const body = req.body as Record<string, unknown>;
+    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 160) {
+      res.status(400).json({ error: 'Please provide a valid Google email address.' });
+      return;
+    }
+
+    const displayName =
+      typeof body.displayName === 'string' ? body.displayName.trim().slice(0, 120) : null;
+
+    const created = await upsertStaffMember({
+      email,
+      displayName,
+      role: normalizeRole(body.role),
+      canViewOrders: body.canViewOrders !== false,
+      canUpdateOrderStatus: body.canUpdateOrderStatus === true,
+      canViewSales: body.canViewSales === true,
+      canManageStaff: body.canManageStaff === true,
+      isActive: body.isActive !== false,
+    });
+
+    res.status(201).json({ member: created });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to save staff member.';
+    res.status(400).json({ error: message });
+  }
+});
+
+app.patch('/api/staff/members/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canManageStaff');
+    if (!staff) return;
+
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: 'Invalid staff member ID.' });
+      return;
+    }
+
+    const body = req.body as Record<string, unknown>;
+    const updated = await updateStaffMemberById(id, {
+      displayName:
+        typeof body.displayName === 'string' ? body.displayName.trim().slice(0, 120) : undefined,
+      role: body.role !== undefined ? normalizeRole(body.role) : undefined,
+      canViewOrders: typeof body.canViewOrders === 'boolean' ? body.canViewOrders : undefined,
+      canUpdateOrderStatus:
+        typeof body.canUpdateOrderStatus === 'boolean' ? body.canUpdateOrderStatus : undefined,
+      canViewSales: typeof body.canViewSales === 'boolean' ? body.canViewSales : undefined,
+      canManageStaff:
+        typeof body.canManageStaff === 'boolean' ? body.canManageStaff : undefined,
+      isActive: typeof body.isActive === 'boolean' ? body.isActive : undefined,
+    });
+
+    if (!updated) {
+      res.status(404).json({ error: 'Staff member not found.' });
+      return;
+    }
+
+    res.json({ member: updated });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to update staff permissions.';
+    res.status(400).json({ error: message });
+  }
+});
+
+app.delete('/api/staff/members/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canManageStaff');
+    if (!staff) return;
+
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: 'Invalid staff member ID.' });
+      return;
+    }
+
+    const deleted = await deleteStaffMemberById(id, staff.email);
+    if (!deleted) {
+      res.status(404).json({ error: 'Staff member not found.' });
+      return;
+    }
+
+    res.json({ deleted: true });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to delete staff member.';
+    res.status(400).json({ error: message });
   }
 });
 

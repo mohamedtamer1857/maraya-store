@@ -35,6 +35,20 @@ export const orderItems = pgTable('order_items', {
   quantity: integer('quantity').notNull(),
 });
 
+export const staffMembers = pgTable('staff_members', {
+  id: serial('id').primaryKey(),
+  email: text('email').notNull().unique(),
+  displayName: text('display_name'),
+  role: text('role').default('operations').notNull(),
+  canViewOrders: integer('can_view_orders').default(1).notNull(),
+  canUpdateOrderStatus: integer('can_update_order_status').default(0).notNull(),
+  canViewSales: integer('can_view_sales').default(0).notNull(),
+  canManageStaff: integer('can_manage_staff').default(0).notNull(),
+  isActive: integer('is_active').default(1).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 export const usersRelations = relations(users, ({ many }) => ({
   orders: many(orders),
 }));

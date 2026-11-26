@@ -9,10 +9,13 @@ interface HeaderProps {
   theme: Theme;
   t: Translations;
   cartCount: number;
+  activeView?: 'store' | 'staff';
   onToggleLang: () => void;
   onToggleTheme: () => void;
   onOpenCart: () => void;
   onOpenOrders: () => void;
+  onOpenStaffPortal: () => void;
+  onOpenStore: () => void;
 }
 
 export function Header({
@@ -20,10 +23,13 @@ export function Header({
   theme,
   t,
   cartCount,
+  activeView = 'store',
   onToggleLang,
   onToggleTheme,
   onOpenCart,
   onOpenOrders,
+  onOpenStaffPortal,
+  onOpenStore,
 }: HeaderProps) {
   const { user, signInWithGoogle, logout } = useAuth();
 
@@ -33,6 +39,7 @@ export function Header({
         {/* Zone 1: Single-line Brand Lockup */}
         <a
           href="#top"
+          onClick={() => onOpenStore()}
           className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1D4ED8] rounded-md shrink-0"
         >
           <BrandLogo lang={lang} />
@@ -42,22 +49,36 @@ export function Header({
         <nav className="hidden lg:flex items-center gap-6 text-sm font-medium text-[#525866] dark:text-[#9CA3AF]">
           <a
             href="#collection"
+            onClick={() => onOpenStore()}
             className="whitespace-nowrap shrink-0 hover:text-[#0F1115] dark:hover:text-[#F4F5F7] transition-colors py-1"
           >
             {t.nav.collection}
           </a>
           <a
             href="#atelier"
+            onClick={() => onOpenStore()}
             className="whitespace-nowrap shrink-0 hover:text-[#0F1115] dark:hover:text-[#F4F5F7] transition-colors py-1"
           >
             {t.nav.craftsmanship}
           </a>
           <a
             href="#locations"
+            onClick={() => onOpenStore()}
             className="whitespace-nowrap shrink-0 hover:text-[#0F1115] dark:hover:text-[#F4F5F7] transition-colors py-1"
           >
             {lang === 'ar' ? 'الفروع والتوصيل' : 'Locations'}
           </a>
+          <button
+            type="button"
+            onClick={onOpenStaffPortal}
+            className={`whitespace-nowrap shrink-0 py-1 transition-colors cursor-pointer ${
+              activeView === 'staff'
+                ? 'text-[#1D4ED8] dark:text-[#60A5FA] font-semibold'
+                : 'hover:text-[#0F1115] dark:hover:text-[#F4F5F7]'
+            }`}
+          >
+            {lang === 'ar' ? 'بوابة الموظفين' : 'Staff Portal'}
+          </button>
         </nav>
 
         {/* Zone 3: Account, Language, Theme & Bag */}
