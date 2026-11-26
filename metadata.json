@@ -1,0 +1,8 @@
+{
+  "name": "MARAYA | مَرايا — Atelier & AI Fitting Room",
+  "description": "Bilingual Arabic and English contemporary clothing storefront with light and dark theme support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

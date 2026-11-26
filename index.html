@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MARAYA | مَرايا — Contemporary Fashion Atelier</title>
+    <meta
+      name="description"
+      content="Bilingual Arabic and English contemporary clothing storefront featuring tailored outerwear, knitwear, and silk pieces with full light and dark theme support."
+    />
+    <meta property="og:title" content="MARAYA | مَرايا — Contemporary Fashion Atelier" />
+    <meta
+      property="og:description"
+      content="Bilingual Arabic and English contemporary clothing storefront featuring tailored outerwear, knitwear, and silk pieces with full light and dark theme support."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700&family=Cormorant+Garamond:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        try {
+          var savedTheme = localStorage.getItem('maraya-theme');
+          var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          if (savedTheme === 'dark' || (!savedTheme && prefersDark)) {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+          var savedLang = localStorage.getItem('maraya-lang');
+          if (savedLang === 'en') {
+            document.documentElement.lang = 'en';
+            document.documentElement.dir = 'ltr';
+          } else {
+            document.documentElement.lang = 'ar';
+            document.documentElement.dir = 'rtl';
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-[#F8F8FA] text-[#0F1115] dark:bg-[#0B0D11] dark:text-[#F4F5F7] antialiased selection:bg-[#1D4ED8]/20 selection:text-[#1D4ED8] dark:selection:bg-[#3B82F6]/30 dark:selection:text-[#93C5FD]">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
