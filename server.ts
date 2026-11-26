@@ -31,6 +31,109 @@ app.get('/api/maps/key', (_req: Request, res: Response) => {
   res.json({ apiKey });
 });
 
+app.get('/api/maps/reverse-geocode', async (req: Request, res: Response) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  const lang = req.query.lang === 'en' ? 'en' : 'ar';
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    res.status(400).json({ error: 'Invalid coordinates.' });
+    return;
+  }
+
+  const inEgypt = lat >= 21.99 && lat <= 31.92 && lng >= 24.7 && lng <= 36.9;
+  const coordsLabel = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+  const fallbackAddress =
+    lang === 'ar'
+      ? `موقعي الحالي (${coordsLabel})`
+      : `Current GPS Location (${coordsLabel})`;
+
+  const apiKey =
+    process.env.GOOGLE_MAPS_API_KEY ||
+    process.env.VITE_GOOGLE_MAPS_API_KEY ||
+    '';
+
+  if (!apiKey) {
+    res.json({
+      address: fallbackAddress,
+      lat,
+      lng,
+      inEgypt,
+      coordinatesOnly: true,
+    });
+    return;
+  }
+
+  try {
+    const url = new URL('https://maps.googleapis.com/maps/api/geocode/json');
+    url.searchParams.set('latlng', `${lat},${lng}`);
+    url.searchParams.set('language', lang);
+    url.searchParams.set('region', 'eg');
+    url.searchParams.set('key', apiKey);
+
+    const geoRes = await fetch(url.toString());
+    if (geoRes.status === 429) {
+      res.status(429).json({
+        error: 'RESOURCE_EXHAUSTED',
+        quotaExceeded: true,
+        address: fallbackAddress,
+        lat,
+        lng,
+        inEgypt,
+        coordinatesOnly: true,
+      });
+      return;
+    }
+
+    const data = (await geoRes.json()) as {
+      status?: string;
+      results?: Array<{ formatted_address?: string }>;
+      error_message?: string;
+    };
+
+    if (data.status === 'OVER_QUERY_LIMIT') {
+      res.status(429).json({
+        error: 'OVER_QUERY_LIMIT',
+        quotaExceeded: true,
+        address: fallbackAddress,
+        lat,
+        lng,
+        inEgypt,
+        coordinatesOnly: true,
+      });
+      return;
+    }
+
+    const formatted = data.results?.[0]?.formatted_address?.trim();
+    if (data.status === 'OK' && formatted) {
+      res.json({
+        address: formatted,
+        lat,
+        lng,
+        inEgypt,
+        coordinatesOnly: false,
+      });
+      return;
+    }
+
+    res.json({
+      address: fallbackAddress,
+      lat,
+      lng,
+      inEgypt,
+      coordinatesOnly: true,
+    });
+  } catch {
+    res.json({
+      address: fallbackAddress,
+      lat,
+      lng,
+      inEgypt,
+      coordinatesOnly: true,
+    });
+  }
+});
+
 app.post('/api/me/sync', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const uid = req.user?.uid;

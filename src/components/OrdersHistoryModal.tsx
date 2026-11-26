@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Loader2, Package, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import type { Language } from '../types';
+import { OrderTrackingStepper } from './OrderTrackingStepper';
 
 interface OrderItemSummary {
   id: number;
@@ -133,6 +134,11 @@ export function OrdersHistoryModal({ isOpen, lang, onClose }: OrdersHistoryModal
                     {lang === 'ar' && order.currency === 'EGP' ? 'ج.م' : order.currency}
                   </span>
                 </div>
+                <OrderTrackingStepper
+                  status={order.status}
+                  createdAt={order.createdAt}
+                  lang={lang}
+                />
                 <div className="grid gap-1 text-[#525866] dark:text-[#D1D5DB]">
                   <p>
                     <strong className="text-[#0F1115] dark:text-[#F4F5F7]">{order.fullName}</strong> ·{' '}

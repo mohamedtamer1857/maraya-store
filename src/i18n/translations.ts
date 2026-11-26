@@ -66,6 +66,12 @@ export interface Translations {
     phonePlaceholder: string;
     cityAddress: string;
     cityAddressPlaceholder: string;
+    detectingLocation: string;
+    currentLocationActive: string;
+    chosenLocationActive: string;
+    useCurrentLocationBtn: string;
+    chooseLocationOnMapBtn: string;
+    locationDeniedHint: string;
     notes: string;
     notesPlaceholder: string;
     paymentMethod: string;
@@ -167,6 +173,12 @@ export const TRANSLATIONS: Record<Language, Translations> = {
       phonePlaceholder: '01xxxxxxxxx',
       cityAddress: 'العنوان بالتفصيل',
       cityAddressPlaceholder: 'المحافظة، المنطقة، اسم الشارع، رقم العمارة والشقة',
+      detectingLocation: 'جاري تحديد موقعك الحالي تلقائياً...',
+      currentLocationActive: 'تم تحديد موقعك الحالي تلقائياً',
+      chosenLocationActive: 'تم استخدام اللوكيشن اللي اخترته',
+      useCurrentLocationBtn: 'موقعي الحالي',
+      chooseLocationOnMapBtn: 'اختار لوكيشن تاني من الخريطة',
+      locationDeniedHint: 'مش قادرين نوصل لموقعك الحالي تلقائياً — اكتب عنوانك أو اختاره من الخريطة.',
       notes: 'ملاحظات',
       notesPlaceholder: 'اكتب أي ملاحظات للمندوب أو ميعاد الاستلام المناسب (اختياري)',
       paymentMethod: 'طريقة الدفع',
@@ -266,6 +278,12 @@ export const TRANSLATIONS: Record<Language, Translations> = {
       phonePlaceholder: '+20 1x xxxx xxxx',
       cityAddress: 'Delivery Address',
       cityAddressPlaceholder: 'Governorate, district, street name, building & apt.',
+      detectingLocation: 'Detecting your current location automatically...',
+      currentLocationActive: 'Using your current GPS location',
+      chosenLocationActive: 'Using your selected location',
+      useCurrentLocationBtn: 'Use Current GPS',
+      chooseLocationOnMapBtn: 'Choose Location on Map',
+      locationDeniedHint: 'Could not detect GPS location automatically — enter your address or pick on the map.',
       notes: 'Order Notes',
       notesPlaceholder: 'Add delivery instructions or preferred timing (optional)',
       paymentMethod: 'Payment Method',

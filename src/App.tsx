@@ -42,6 +42,9 @@ export default function App() {
 
   const [isOrdersOpen, setIsOrdersOpen] = useState(false);
   const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [deliveryAddressNonce, setDeliveryAddressNonce] = useState(0);
+  const [isPickingCheckoutLocation, setIsPickingCheckoutLocation] = useState(false);
+  const [startCartAtCheckout, setStartCartAtCheckout] = useState(false);
   const [mapsApiKey, setMapsApiKey] = useState<string>(
     () => import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
   );
@@ -368,8 +371,15 @@ export default function App() {
           <AtelierLocationsMap
             lang={lang}
             apiKey={mapsApiKey}
+            isPickingForCheckout={isPickingCheckoutLocation}
+            onConfirmCheckoutLocation={() => {
+              setIsPickingCheckoutLocation(false);
+              setStartCartAtCheckout(true);
+              setIsCartOpen(true);
+            }}
             onSelectDeliveryAddress={(addr) => {
               setDeliveryAddress(addr);
+              setDeliveryAddressNonce((n) => n + 1);
               setToastText(
                 lang === 'ar'
                   ? 'تم تحديد عنوان التوصيل في الشنطة'
@@ -409,7 +419,17 @@ export default function App() {
         lang={lang}
         t={t}
         prefillAddress={deliveryAddress}
-        onClose={() => setIsCartOpen(false)}
+        prefillNonce={deliveryAddressNonce}
+        startAtCheckout={startCartAtCheckout}
+        onClose={() => {
+          setIsCartOpen(false);
+          setStartCartAtCheckout(false);
+        }}
+        onRequestMapPicker={() => {
+          setIsCartOpen(false);
+          setIsPickingCheckoutLocation(true);
+          document.getElementById('locations')?.scrollIntoView({ behavior: 'smooth' });
+        }}
         onUpdateQty={handleUpdateQty}
         onRemoveItem={handleRemoveItem}
         onClearCart={() => setCart([])}

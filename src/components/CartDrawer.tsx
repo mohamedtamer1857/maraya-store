@@ -1,6 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { CheckCircle2, Minus, Plus, ShoppingBag, Trash2, X } from 'lucide-react';
+import {
+  CheckCircle2,
+  Loader2,
+  LocateFixed,
+  MapPin,
+  Minus,
+  Plus,
+  ShoppingBag,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import type { CartItem, Language } from '../types';
 import type { Translations } from '../i18n/translations';
@@ -11,7 +21,10 @@ interface CartDrawerProps {
   lang: Language;
   t: Translations;
   prefillAddress?: string;
+  prefillNonce?: number;
+  startAtCheckout?: boolean;
   onClose: () => void;
+  onRequestMapPicker?: () => void;
   onUpdateQty: (productId: string, size: string, delta: number) => void;
   onRemoveItem: (productId: string, size: string) => void;
   onClearCart: () => void;
@@ -34,7 +47,10 @@ export function CartDrawer({
   lang,
   t,
   prefillAddress,
+  prefillNonce = 0,
+  startAtCheckout = false,
   onClose,
+  onRequestMapPicker,
   onUpdateQty,
   onRemoveItem,
   onClearCart,
@@ -49,11 +65,68 @@ export function CartDrawer({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [confirmedOrder, setConfirmedOrder] = useState<ConfirmedOrder | null>(null);
 
-  useEffect(() => {
-    if (prefillAddress && !address) {
-      setAddress(prefillAddress);
+  const [locationSource, setLocationSource] = useState<'none' | 'gps' | 'map' | 'manual'>('none');
+  const [isDetectingLocation, setIsDetectingLocation] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const autoTriedGpsRef = useRef(false);
+  const lastAppliedNonceRef = useRef(0);
+
+  const detectCurrentLocation = useCallback(async () => {
+    if (!navigator.geolocation) {
+      setLocationError(t.cart.locationDeniedHint);
+      return;
     }
-  }, [prefillAddress, address]);
+
+    setIsDetectingLocation(true);
+    setLocationError(null);
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        try {
+          const res = await fetch(
+            `/api/maps/reverse-geocode?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}&lang=${lang}`
+          );
+          if (res.status === 429) {
+            window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+          }
+          const data = (await res.json()) as { address?: string };
+          const resolved =
+            data.address || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+          setAddress(resolved);
+          setLocationSource('gps');
+        } catch {
+          setAddress(`${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+          setLocationSource('gps');
+        } finally {
+          setIsDetectingLocation(false);
+        }
+      },
+      () => {
+        setIsDetectingLocation(false);
+        setLocationError(t.cart.locationDeniedHint);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    );
+  }, [lang, t.cart.locationDeniedHint]);
+
+  // If returning from map picker, jump straight to checkout
+  useEffect(() => {
+    if (isOpen && startAtCheckout && items.length > 0 && step === 'bag') {
+      setStep('checkout');
+    }
+  }, [isOpen, startAtCheckout, items.length, step]);
+
+  // Apply address explicitly selected on the Egypt map
+  useEffect(() => {
+    if (prefillAddress && prefillNonce > lastAppliedNonceRef.current) {
+      lastAppliedNonceRef.current = prefillNonce;
+      setAddress(prefillAddress);
+      setLocationSource('map');
+      setLocationError(null);
+    }
+  }, [prefillAddress, prefillNonce]);
 
   useEffect(() => {
     if (user && !fullName && (savedProfile?.displayName || user.displayName)) {
@@ -62,10 +135,18 @@ export function CartDrawer({
     if (savedProfile?.phone && !phone) {
       setPhone(savedProfile.phone);
     }
-    if (savedProfile?.savedAddress && !address) {
-      setAddress(savedProfile.savedAddress);
-    }
-  }, [user, savedProfile, fullName, phone, address]);
+  }, [user, savedProfile, fullName, phone]);
+
+  // Automatically fill customer's live GPS location when entering checkout
+  // unless they explicitly picked a custom location on the map or typed one manually.
+  useEffect(() => {
+    if (!isOpen || step !== 'checkout') return;
+    if (locationSource === 'map' || locationSource === 'manual' || locationSource === 'gps') return;
+    if (autoTriedGpsRef.current) return;
+
+    autoTriedGpsRef.current = true;
+    void detectCurrentLocation();
+  }, [isOpen, step, locationSource, detectCurrentLocation]);
 
   if (!isOpen) return null;
 
@@ -152,6 +233,9 @@ export function CartDrawer({
     setPhone('');
     setAddress('');
     setNotes('');
+    setLocationSource('none');
+    setLocationError(null);
+    autoTriedGpsRef.current = false;
     onClearCart();
   };
 
@@ -317,17 +401,73 @@ export function CartDrawer({
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-[#525866] dark:text-[#9CA3AF]">
-                  {t.cart.cityAddress}
-                </label>
+                <div className="flex items-center justify-between gap-2">
+                  <label className="block text-xs font-medium text-[#525866] dark:text-[#9CA3AF]">
+                    {t.cart.cityAddress}
+                  </label>
+                  {isDetectingLocation ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#1D4ED8] dark:text-[#60A5FA]">
+                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                      <span>{t.cart.detectingLocation}</span>
+                    </span>
+                  ) : locationSource === 'gps' ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                      <LocateFixed className="h-3 w-3" aria-hidden="true" />
+                      <span>{t.cart.currentLocationActive}</span>
+                    </span>
+                  ) : locationSource === 'map' ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#1D4ED8] dark:text-[#60A5FA]">
+                      <MapPin className="h-3 w-3" aria-hidden="true" />
+                      <span>{t.cart.chosenLocationActive}</span>
+                    </span>
+                  ) : null}
+                </div>
+
                 <textarea
                   rows={2}
                   required
                   value={address}
                   placeholder={t.cart.cityAddressPlaceholder}
-                  onChange={(e) => setAddress(e.target.value)}
+                  onChange={(e) => {
+                    setAddress(e.target.value);
+                    setLocationSource('manual');
+                    setLocationError(null);
+                  }}
                   className="mt-1.5 w-full rounded-lg border border-black/[0.12] dark:border-white/[0.14] bg-transparent p-3.5 text-sm text-[#0F1115] dark:text-[#F4F5F7] placeholder:text-[#525866]/60 dark:placeholder:text-[#9CA3AF]/60 focus:border-[#1D4ED8] focus:outline-none"
                 />
+
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void detectCurrentLocation()}
+                    disabled={isDetectingLocation}
+                    className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-60 ${
+                      locationSource === 'gps'
+                        ? 'border-emerald-600/40 bg-emerald-500/10 text-emerald-700 dark:border-emerald-400/40 dark:text-emerald-300'
+                        : 'border-black/[0.12] dark:border-white/[0.14] text-[#0F1115] dark:text-[#F4F5F7] hover:border-[#1D4ED8]'
+                    }`}
+                  >
+                    <LocateFixed className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    <span>{t.cart.useCurrentLocationBtn}</span>
+                  </button>
+
+                  {onRequestMapPicker && (
+                    <button
+                      type="button"
+                      onClick={onRequestMapPicker}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-black/[0.12] dark:border-white/[0.14] px-2.5 text-[11px] font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:border-[#1D4ED8] dark:hover:border-[#60A5FA] transition-colors cursor-pointer"
+                    >
+                      <MapPin className="h-3 w-3 shrink-0" aria-hidden="true" />
+                      <span>{t.cart.chooseLocationOnMapBtn}</span>
+                    </button>
+                  )}
+                </div>
+
+                {locationError && (
+                  <p className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+                    {locationError}
+                  </p>
+                )}
               </div>
 
               <div>

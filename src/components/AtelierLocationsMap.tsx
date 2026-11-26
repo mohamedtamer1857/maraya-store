@@ -13,7 +13,8 @@ import {
   useMap,
   useMapsLibrary,
 } from '@vis.gl/react-google-maps';
-import { LocateFixed, MapPin, Navigation, Search, Star } from 'lucide-react';
+import type { MapMouseEvent } from '@vis.gl/react-google-maps';
+import { Loader2, LocateFixed, MapPin, Navigation, Search, Star } from 'lucide-react';
 import type { Language } from '../types';
 
 interface PlaceLocationItem {
@@ -29,6 +30,8 @@ interface AtelierLocationsMapProps {
   lang: Language;
   apiKey: string;
   onSelectDeliveryAddress: (address: string) => void;
+  isPickingForCheckout?: boolean;
+  onConfirmCheckoutLocation?: () => void;
 }
 
 const DEFAULT_CENTER: google.maps.LatLngLiteral = { lat: 30.0444, lng: 31.2357 };
@@ -99,9 +102,13 @@ function PlacePin({
 function MapWorkspace({
   lang,
   onSelectDeliveryAddress,
+  isPickingForCheckout,
+  onConfirmCheckoutLocation,
 }: {
   lang: Language;
   onSelectDeliveryAddress: (address: string) => void;
+  isPickingForCheckout?: boolean;
+  onConfirmCheckoutLocation?: () => void;
 }) {
   const map = useMap();
   const placesLib = useMapsLibrary('places');
@@ -114,6 +121,7 @@ function MapWorkspace({
   const [queryText, setQueryText] = useState('');
   const [suggestions, setSuggestions] = useState<google.maps.places.AutocompleteSuggestion[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
   const [routeSummary, setRouteSummary] = useState<{
     distanceKm: string;
     durationMin: number;
@@ -304,6 +312,87 @@ function MapWorkspace({
     }
   };
 
+  const applyCoordinatesToMap = useCallback(
+    async (lat: number, lng: number, labelPrefix?: string) => {
+      setIsLocating(true);
+      setMapError(null);
+      try {
+        const res = await fetch(
+          `/api/maps/reverse-geocode?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}&lang=${lang}`
+        );
+        if (res.status === 429) {
+          window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+        }
+        const data = (await res.json()) as { address?: string };
+        const resolvedAddress =
+          data.address ||
+          `${labelPrefix ? `${labelPrefix} ` : ''}(${lat.toFixed(5)}, ${lng.toFixed(5)})`;
+
+        const picked: PlaceLocationItem = {
+          id: `pin-${Date.now()}`,
+          name:
+            lang === 'ar' ? 'موقع التوصيل المختار' : 'Selected Delivery Location',
+          address: resolvedAddress,
+          position: { lat, lng },
+        };
+        setDestinationPlace(picked);
+        setQueryText(resolvedAddress);
+        setSuggestions([]);
+        onSelectDeliveryAddress(resolvedAddress);
+        map?.panTo({ lat, lng });
+        if ((map?.getZoom() ?? 0) < 14) {
+          map?.setZoom(14);
+        }
+      } catch {
+        const fallback = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+        setDestinationPlace({
+          id: `pin-${Date.now()}`,
+          name: lang === 'ar' ? 'موقع التوصيل المختار' : 'Selected Delivery Location',
+          address: fallback,
+          position: { lat, lng },
+        });
+        setQueryText(fallback);
+        onSelectDeliveryAddress(fallback);
+      } finally {
+        setIsLocating(false);
+      }
+    },
+    [lang, map, onSelectDeliveryAddress]
+  );
+
+  const handleUseCurrentGps = () => {
+    if (!navigator.geolocation) {
+      setMapError(
+        lang === 'ar'
+          ? 'المتصفح مش بيدعم تحديد الموقع تلقائياً.'
+          : 'Browser geolocation is not supported.'
+      );
+      return;
+    }
+    setIsLocating(true);
+    setMapError(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        void applyCoordinatesToMap(pos.coords.latitude, pos.coords.longitude);
+      },
+      () => {
+        setIsLocating(false);
+        setMapError(
+          lang === 'ar'
+            ? 'مقدرناش نوصل لموقعك الحالي. اسمح باللوكيشن أو اضغط على الخريطة.'
+            : 'Unable to access your current location. Allow GPS or click on the map.'
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    );
+  };
+
+  const handleMapClick = (event: MapMouseEvent) => {
+    const latLng = event.detail?.latLng;
+    if (!latLng) return;
+    void applyCoordinatesToMap(latLng.lat, latLng.lng);
+  };
+
   // Modern Route.computeRoutes between selected store and delivery destination
   useEffect(() => {
     polylinesRef.current.forEach((p) => p.setMap(null));
@@ -422,6 +511,45 @@ function MapWorkspace({
           )}
         </form>
 
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={handleUseCurrentGps}
+            disabled={isLocating}
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-black/[0.12] dark:border-white/[0.14] bg-white dark:bg-[#13161C] px-3 text-xs font-semibold text-[#0F1115] dark:text-[#F4F5F7] hover:border-[#1D4ED8] hover:text-[#1D4ED8] dark:hover:border-[#60A5FA] dark:hover:text-[#60A5FA] transition-colors cursor-pointer disabled:opacity-60"
+          >
+            {isLocating ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <LocateFixed className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            <span>
+              {lang === 'ar' ? 'استخدم موقعي الحالي' : 'Use My Current Location'}
+            </span>
+          </button>
+
+          <span className="text-[11px] text-[#525866] dark:text-[#9CA3AF]">
+            {lang === 'ar'
+              ? 'أو اضغط على أي نقطة على الخريطة'
+              : 'Or click anywhere on the map'}
+          </span>
+        </div>
+
+        {isPickingForCheckout && destinationPlace && onConfirmCheckoutLocation && (
+          <button
+            type="button"
+            onClick={onConfirmCheckoutLocation}
+            className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#1D4ED8] px-4 text-xs font-semibold text-white hover:bg-[#1E40AF] dark:bg-[#3B82F6] dark:hover:bg-[#2563EB] transition-colors cursor-pointer"
+          >
+            <MapPin className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>
+              {lang === 'ar'
+                ? 'تأكيد اللوكيشن والرجوع لإكمال الأوردر'
+                : 'Confirm Location & Return to Checkout'}
+            </span>
+          </button>
+        )}
+
         {routeSummary && destinationPlace && (
           <div className="rounded-xl border border-[#1D4ED8]/25 bg-[#1D4ED8]/5 dark:bg-[#3B82F6]/10 p-4 space-y-1.5">
             <div className="flex items-center justify-between text-xs font-semibold text-[#1D4ED8] dark:text-[#60A5FA]">
@@ -502,6 +630,7 @@ function MapWorkspace({
           minZoom={5}
           restriction={{ latLngBounds: EGYPT_BOUNDS, strictBounds: true }}
           gestureHandling="greedy"
+          onClick={handleMapClick}
           internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
           style={{ width: '100%', height: '100%' }}
         >
@@ -531,6 +660,8 @@ export function AtelierLocationsMap({
   lang,
   apiKey,
   onSelectDeliveryAddress,
+  isPickingForCheckout,
+  onConfirmCheckoutLocation,
 }: AtelierLocationsMapProps) {
   if (!apiKey) {
     return (
@@ -544,7 +675,12 @@ export function AtelierLocationsMap({
 
   return (
     <APIProvider apiKey={apiKey} language={lang} region="EG" libraries={['places', 'routes', 'marker']}>
-      <MapWorkspace lang={lang} onSelectDeliveryAddress={onSelectDeliveryAddress} />
+      <MapWorkspace
+        lang={lang}
+        onSelectDeliveryAddress={onSelectDeliveryAddress}
+        isPickingForCheckout={isPickingForCheckout}
+        onConfirmCheckoutLocation={onConfirmCheckoutLocation}
+      />
     </APIProvider>
   );
 }
