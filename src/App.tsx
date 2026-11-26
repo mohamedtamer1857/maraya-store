@@ -1,18 +1,24 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ArrowUpRight, Check, MapPin, Search } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { MotionConfig, motion, useScroll } from 'motion/react';
+import { ArrowUpRight, Check, Search } from 'lucide-react';
 import { HERO_CAMPAIGN_IMAGE, PRODUCTS } from './data/products';
 import { TRANSLATIONS } from './i18n/translations';
-import type { CartItem, CategoryKey, Language, Product, Theme } from './types';
+import type { CartItem, CategoryKey, Language, Product, StoreCategory, Theme } from './types';
 import { Header } from './components/Header';
 import { ProductCard } from './components/ProductCard';
 import { ProductDetailModal } from './components/ProductDetailModal';
 import { CartDrawer } from './components/CartDrawer';
 import { BrandLogo } from './components/BrandLogo';
-import { AtelierLocationsMap } from './components/AtelierLocationsMap';
+import { WorkflowShowcase } from './components/WorkflowShowcase';
 import { OrdersHistoryModal } from './components/OrdersHistoryModal';
 import { StaffPortalPage } from './components/StaffPortalPage';
 
-const CATEGORIES: CategoryKey[] = ['all', 'outerwear', 'tailoring', 'knitwear', 'shirts'];
+const DEFAULT_STORE_CATEGORIES: StoreCategory[] = [
+  { id: 1, slug: 'outerwear', nameAr: 'بالطوهات وجواكت', nameEn: 'Outerwear', isActive: true, sortOrder: 0 },
+  { id: 2, slug: 'tailoring', nameAr: 'بليزرات وتفصيل', nameEn: 'Tailoring', isActive: true, sortOrder: 1 },
+  { id: 3, slug: 'knitwear', nameAr: 'تريكو وبلوفرات', nameEn: 'Knitwear', isActive: true, sortOrder: 2 },
+  { id: 4, slug: 'shirts', nameAr: 'قمصان', nameEn: 'Shirts', isActive: true, sortOrder: 3 },
+];
 
 export default function App() {
   const [lang, setLang] = useState<Language>(() => {
@@ -51,16 +57,61 @@ export default function App() {
       return 'store';
     }
   });
-  const [deliveryAddress, setDeliveryAddress] = useState('');
-  const [deliveryAddressNonce, setDeliveryAddressNonce] = useState(0);
-  const [isPickingCheckoutLocation, setIsPickingCheckoutLocation] = useState(false);
-  const [startCartAtCheckout, setStartCartAtCheckout] = useState(false);
+  const [products, setProducts] = useState<Product[]>(PRODUCTS);
+  const [storeCategories, setStoreCategories] = useState<StoreCategory[]>(DEFAULT_STORE_CATEGORIES);
   const [mapsApiKey, setMapsApiKey] = useState<string>(
     () => import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
   );
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
 
+  const { scrollYProgress } = useScroll();
   const t = TRANSLATIONS[lang];
+
+  const refreshProducts = useCallback(async () => {
+    try {
+      const res = await fetch('/api/products');
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        products?: Product[];
+        categories?: StoreCategory[];
+      };
+      if (Array.isArray(data.categories)) {
+        setStoreCategories(data.categories);
+      }
+      if (Array.isArray(data.products)) {
+        const nextProducts = data.products;
+        setProducts(nextProducts);
+        setDetailProduct((prev) =>
+          prev ? nextProducts.find((p) => p.id === prev.id) ?? prev : null
+        );
+        setCart((prev) =>
+          prev
+            .map((item) => {
+              const latest = nextProducts.find((p) => p.id === item.product.id);
+              if (!latest) return item;
+              const sizeLimit =
+                latest.sizeStock && typeof latest.sizeStock[item.size] === 'number'
+                  ? latest.sizeStock[item.size]
+                  : typeof latest.stockQty === 'number'
+                  ? latest.stockQty
+                  : 99;
+              return {
+                ...item,
+                product: latest,
+                quantity: Math.min(item.quantity, sizeLimit),
+              };
+            })
+            .filter((item) => item.product.isActive !== false && item.quantity > 0)
+        );
+      }
+    } catch {
+      // Keep fallback catalog on transient errors
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshProducts();
+  }, [refreshProducts]);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -139,9 +190,44 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toastText]);
 
+  const categoryLabelMap = useMemo(() => {
+    const map: Record<string, { ar: string; en: string }> = {
+      all: { ar: TRANSLATIONS.ar.catalog.categories.all, en: TRANSLATIONS.en.catalog.categories.all },
+      outerwear: {
+        ar: TRANSLATIONS.ar.catalog.categories.outerwear,
+        en: TRANSLATIONS.en.catalog.categories.outerwear,
+      },
+      tailoring: {
+        ar: TRANSLATIONS.ar.catalog.categories.tailoring,
+        en: TRANSLATIONS.en.catalog.categories.tailoring,
+      },
+      knitwear: {
+        ar: TRANSLATIONS.ar.catalog.categories.knitwear,
+        en: TRANSLATIONS.en.catalog.categories.knitwear,
+      },
+      shirts: {
+        ar: TRANSLATIONS.ar.catalog.categories.shirts,
+        en: TRANSLATIONS.en.catalog.categories.shirts,
+      },
+    };
+    for (const cat of storeCategories) {
+      map[cat.slug] = { ar: cat.nameAr, en: cat.nameEn };
+    }
+    return map;
+  }, [storeCategories]);
+
+  useEffect(() => {
+    if (
+      activeCategory !== 'all' &&
+      !storeCategories.some((c) => c.slug === activeCategory)
+    ) {
+      setActiveCategory('all');
+    }
+  }, [activeCategory, storeCategories]);
+
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return PRODUCTS.filter((p) => {
+    return products.filter((p) => {
       const matchesCategory = activeCategory === 'all' || p.category === activeCategory;
       if (!matchesCategory) return false;
       if (!q) return true;
@@ -154,7 +240,7 @@ export default function App() {
         p.color.en.toLowerCase().includes(q)
       );
     });
-  }, [activeCategory, searchQuery]);
+  }, [products, activeCategory, searchQuery]);
 
   const cartCount = useMemo(
     () => cart.reduce((sum, item) => sum + item.quantity, 0),
@@ -162,6 +248,32 @@ export default function App() {
   );
 
   const handleAddToBag = (product: Product, size: string) => {
+    const maxStockForSize =
+      product.sizeStock && typeof product.sizeStock[size] === 'number'
+        ? product.sizeStock[size]
+        : typeof product.stockQty === 'number'
+        ? product.stockQty
+        : 99;
+    if (maxStockForSize <= 0) {
+      setToastText(
+        lang === 'ar'
+          ? `مقاس ${size} نفذت كميته حالياً`
+          : `Size ${size} is currently out of stock`
+      );
+      return;
+    }
+
+    const currentForSize =
+      cart.find((i) => i.product.id === product.id && i.size === size)?.quantity ?? 0;
+    if (currentForSize >= maxStockForSize) {
+      setToastText(
+        lang === 'ar'
+          ? `وصلت للحد الأقصى المتاح لمقاس ${size} (${maxStockForSize})`
+          : `Maximum available stock reached for size ${size} (${maxStockForSize})`
+      );
+      return;
+    }
+
     setCart((prev) => {
       const existing = prev.find((i) => i.product.id === product.id && i.size === size);
       if (existing) {
@@ -179,11 +291,17 @@ export default function App() {
   const handleUpdateQty = (productId: string, size: string, delta: number) => {
     setCart((prev) =>
       prev
-        .map((item) =>
-          item.product.id === productId && item.size === size
-            ? { ...item, quantity: item.quantity + delta }
-            : item
-        )
+        .map((item) => {
+          if (item.product.id !== productId || item.size !== size) return item;
+          const maxStock =
+            item.product.sizeStock && typeof item.product.sizeStock[size] === 'number'
+              ? item.product.sizeStock[size]
+              : typeof item.product.stockQty === 'number'
+              ? item.product.stockQty
+              : 99;
+          const nextQty = delta > 0 ? Math.min(maxStock, item.quantity + delta) : item.quantity + delta;
+          return { ...item, quantity: nextQty };
+        })
         .filter((item) => item.quantity > 0)
     );
   };
@@ -195,7 +313,14 @@ export default function App() {
   };
 
   return (
-    <div id="top" className="min-h-screen flex flex-col bg-[#F8F8FA] text-[#0F1115] dark:bg-[#0B0D11] dark:text-[#F4F5F7] transition-colors duration-200">
+    <MotionConfig reducedMotion="user">
+      <div id="top" className="min-h-screen flex flex-col bg-[#F8F8FA] text-[#0F1115] dark:bg-[#0B0D11] dark:text-[#F4F5F7] transition-colors duration-200">
+        {/* Subtle Scroll Progress Indicator */}
+        <motion.div
+          aria-hidden="true"
+          style={{ scaleX: scrollYProgress }}
+          className="fixed top-0 inset-x-0 z-50 h-[2.5px] origin-left bg-[#1D4ED8] dark:bg-[#60A5FA]"
+        />
       {mapsQuotaExceeded && (
         <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
           <span>
@@ -218,25 +343,35 @@ export default function App() {
         theme={theme}
         t={t}
         cartCount={cartCount}
-        activeView={activeView}
         onToggleLang={() => setLang((prev) => (prev === 'ar' ? 'en' : 'ar'))}
         onToggleTheme={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
         onOpenCart={() => setIsCartOpen(true)}
         onOpenOrders={() => setIsOrdersOpen(true)}
-        onOpenStaffPortal={openStaffPortal}
         onOpenStore={openStorefront}
       />
 
       <main className="flex-1">
         {activeView === 'staff' ? (
-          <StaffPortalPage lang={lang} onBackToStore={openStorefront} />
+          <StaffPortalPage
+            lang={lang}
+            onBackToStore={openStorefront}
+            onCatalogUpdated={() => void refreshProducts()}
+          />
         ) : (
           <>
             {/* Section 1: Storefront Hero */}
         <section className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-12 sm:pt-10 sm:pb-16">
-          <div className="relative overflow-hidden rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-[#13161C]">
-            <div className="aspect-[16/10] sm:aspect-[16/9] lg:aspect-[21/9] w-full">
-              <img
+          <motion.div
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
+            className="relative overflow-hidden rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-[#13161C]"
+          >
+            <div className="aspect-[16/10] sm:aspect-[16/9] lg:aspect-[21/9] w-full overflow-hidden">
+              <motion.img
+                initial={{ scale: 1.04 }}
+                animate={{ scale: 1 }}
+                transition={{ duration: 0.9, ease: [0.16, 1, 0.3, 1] }}
                 src={HERO_CAMPAIGN_IMAGE}
                 alt={t.hero.title}
                 referrerPolicy="no-referrer"
@@ -248,7 +383,12 @@ export default function App() {
             <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/45 to-black/15" />
 
             <div className="absolute inset-0 flex items-end p-6 sm:p-10 lg:p-12">
-              <div className="max-w-2xl">
+              <motion.div
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, delay: 0.12, ease: [0.16, 1, 0.3, 1] }}
+                className="max-w-2xl"
+              >
                 <p className="text-xs sm:text-sm font-medium text-white/80">
                   {t.hero.kicker}
                 </p>
@@ -267,15 +407,15 @@ export default function App() {
                     <ArrowUpRight className="h-4 w-4 shrink-0" aria-hidden="true" />
                   </a>
                   <a
-                    href="#atelier"
+                    href="#workflow"
                     className="inline-flex h-11 items-center gap-1.5 rounded-lg border border-white/30 bg-white/10 px-5 text-sm font-semibold text-white backdrop-blur-sm hover:bg-white/20 transition-colors whitespace-nowrap"
                   >
-                    <span>{t.hero.secondaryCta}</span>
+                    <span>{lang === 'ar' ? 'إزاي تطلب خطوة بخطوة' : 'How Ordering Works'}</span>
                   </a>
                 </div>
-              </div>
+              </motion.div>
             </div>
-          </div>
+          </motion.div>
         </section>
 
         {/* Section 2: Featured Collection */}
@@ -311,20 +451,31 @@ export default function App() {
 
           {/* Interactive Category Filter Segmented Controls */}
           <div className="mt-6 flex flex-wrap items-center gap-1.5 rounded-xl bg-[#ECEEF2] dark:bg-[#13161C] p-1.5 w-fit max-w-full">
-            {CATEGORIES.map((category) => {
-              const active = activeCategory === category;
+            <button
+              type="button"
+              onClick={() => setActiveCategory('all')}
+              className={`h-9 rounded-lg px-4 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                activeCategory === 'all'
+                  ? 'bg-white text-[#0F1115] shadow-xs dark:bg-[#232833] dark:text-[#F4F5F7]'
+                  : 'text-[#525866] hover:text-[#0F1115] dark:text-[#9CA3AF] dark:hover:text-[#F4F5F7]'
+              }`}
+            >
+              {t.catalog.categories.all}
+            </button>
+            {storeCategories.map((cat) => {
+              const active = activeCategory === cat.slug;
               return (
                 <button
-                  key={category}
+                  key={cat.slug}
                   type="button"
-                  onClick={() => setActiveCategory(category)}
+                  onClick={() => setActiveCategory(cat.slug)}
                   className={`h-9 rounded-lg px-4 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                     active
                       ? 'bg-white text-[#0F1115] shadow-xs dark:bg-[#232833] dark:text-[#F4F5F7]'
                       : 'text-[#525866] hover:text-[#0F1115] dark:text-[#9CA3AF] dark:hover:text-[#F4F5F7]'
                   }`}
                 >
-                  {t.catalog.categories[category]}
+                  {lang === 'ar' ? cat.nameAr : cat.nameEn}
                 </button>
               );
             })}
@@ -337,6 +488,7 @@ export default function App() {
                 <ProductCard
                   key={product.id}
                   product={product}
+                  categoryLabel={categoryLabelMap[product.category]?.[lang] ?? product.category}
                   lang={lang}
                   t={t}
                   onQuickView={(item) => setDetailProduct(item)}
@@ -351,25 +503,44 @@ export default function App() {
           )}
         </section>
 
-        {/* Section 3: House Craft & Material Standards */}
+        {/* Section 3: Interactive Scroll-Triggered Ordering Workflow */}
+        <WorkflowShowcase
+          lang={lang}
+          cartCount={cartCount}
+          onOpenCart={() => setIsCartOpen(true)}
+          onOpenOrders={() => setIsOrdersOpen(true)}
+        />
+
+        {/* Section 4: House Craft & Material Standards */}
         <section
           id="atelier"
           className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-14 sm:py-20 border-t border-black/[0.06] dark:border-white/[0.07]"
         >
           <div className="grid gap-10 lg:grid-cols-12 lg:items-start">
-            <div className="lg:col-span-4">
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, amount: 0.2 }}
+              transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+              className="lg:col-span-4"
+            >
               <h2 className="font-editorial text-2xl sm:text-3xl font-semibold text-[#0F1115] dark:text-[#F4F5F7] [text-wrap:balance]">
                 {t.craft.heading}
               </h2>
               <p className="mt-3 text-sm leading-relaxed text-[#525866] dark:text-[#9CA3AF]">
                 {t.craft.subheading}
               </p>
-            </div>
+            </motion.div>
 
             <div className="lg:col-span-8 grid gap-6 sm:grid-cols-3">
-              {t.craft.pillars.map((pillar) => (
-                <div
+              {t.craft.pillars.map((pillar, idx) => (
+                <motion.div
                   key={pillar.index}
+                  initial={{ opacity: 0, y: 18 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true, amount: 0.2 }}
+                  transition={{ duration: 0.4, delay: idx * 0.08, ease: [0.16, 1, 0.3, 1] }}
+                  whileHover={{ y: -3 }}
                   className="rounded-xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-[#13161C] p-6"
                 >
                   <span className="font-mono text-xs font-semibold text-[#1D4ED8] dark:text-[#60A5FA] tabular-nums">
@@ -381,53 +552,10 @@ export default function App() {
                   <p className="mt-2 text-xs sm:text-sm leading-relaxed text-[#525866] dark:text-[#9CA3AF]">
                     {pillar.body}
                   </p>
-                </div>
+                </motion.div>
               ))}
             </div>
           </div>
-        </section>
-
-        {/* Section 4: Egypt Boutiques, Address Autocomplete & Delivery Route */}
-        <section
-          id="locations"
-          className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-12 sm:py-16 border-t border-black/[0.06] dark:border-white/[0.07]"
-        >
-          <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div className="max-w-2xl">
-              <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#1D4ED8] dark:text-[#60A5FA]">
-                <MapPin className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>{lang === 'ar' ? 'خرائط جوجل · مصر' : 'Google Maps Platform · Egypt'}</span>
-              </div>
-              <h2 className="mt-2 font-editorial text-2xl sm:text-3xl font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
-                {lang === 'ar' ? 'فروعنا في مصر ومسار التوصيل' : 'Egypt Boutique Locator & Delivery Routing'}
-              </h2>
-              <p className="mt-2 text-sm text-[#525866] dark:text-[#9CA3AF]">
-                {lang === 'ar'
-                  ? 'ابحث عن عنوانك جوه مصر عشان تحدد مسار التوصيل والمسافة، والعنوان هيتكتب تلقائياً في شنطة الأوردر.'
-                  : 'Search your street address in Egypt to preview the delivery route and auto-fill your checkout address.'}
-              </p>
-            </div>
-          </div>
-
-          <AtelierLocationsMap
-            lang={lang}
-            apiKey={mapsApiKey}
-            isPickingForCheckout={isPickingCheckoutLocation}
-            onConfirmCheckoutLocation={() => {
-              setIsPickingCheckoutLocation(false);
-              setStartCartAtCheckout(true);
-              setIsCartOpen(true);
-            }}
-            onSelectDeliveryAddress={(addr) => {
-              setDeliveryAddress(addr);
-              setDeliveryAddressNonce((n) => n + 1);
-              setToastText(
-                lang === 'ar'
-                  ? 'تم تحديد عنوان التوصيل في الشنطة'
-                  : 'Delivery address synced to bag'
-              );
-            }}
-          />
         </section>
           </>
         )}
@@ -458,6 +586,11 @@ export default function App() {
       {/* Modals & Drawers */}
       <ProductDetailModal
         product={detailProduct}
+        categoryLabel={
+          detailProduct
+            ? categoryLabelMap[detailProduct.category]?.[lang] ?? detailProduct.category
+            : undefined
+        }
         lang={lang}
         t={t}
         onClose={() => setDetailProduct(null)}
@@ -469,21 +602,12 @@ export default function App() {
         items={cart}
         lang={lang}
         t={t}
-        prefillAddress={deliveryAddress}
-        prefillNonce={deliveryAddressNonce}
-        startAtCheckout={startCartAtCheckout}
-        onClose={() => {
-          setIsCartOpen(false);
-          setStartCartAtCheckout(false);
-        }}
-        onRequestMapPicker={() => {
-          setIsCartOpen(false);
-          setIsPickingCheckoutLocation(true);
-          document.getElementById('locations')?.scrollIntoView({ behavior: 'smooth' });
-        }}
+        mapsApiKey={mapsApiKey}
+        onClose={() => setIsCartOpen(false)}
         onUpdateQty={handleUpdateQty}
         onRemoveItem={handleRemoveItem}
         onClearCart={() => setCart([])}
+        onOrderPlaced={() => void refreshProducts()}
       />
 
       <OrdersHistoryModal
@@ -502,6 +626,7 @@ export default function App() {
           <span>{toastText}</span>
         </div>
       )}
-    </div>
+      </div>
+    </MotionConfig>
   );
 }

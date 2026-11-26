@@ -1,13 +1,25 @@
 export type Language = 'ar' | 'en';
 export type Theme = 'light' | 'dark';
-export type CategoryKey = 'all' | 'outerwear' | 'tailoring' | 'knitwear' | 'shirts';
+export type CategoryKey = string;
+
+export interface StoreCategory {
+  id: number;
+  slug: string;
+  nameAr: string;
+  nameEn: string;
+  isActive: boolean;
+  sortOrder: number;
+}
 
 export interface Product {
   id: string;
   sku: string;
-  category: Exclude<CategoryKey, 'all'>;
+  category: string;
   image: string;
   priceEgp: number;
+  stockQty?: number;
+  sizeStock?: Record<string, number>;
+  isActive?: boolean;
   sizes: string[];
   tag?: {
     ar: string;

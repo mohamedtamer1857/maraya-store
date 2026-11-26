@@ -9,12 +9,10 @@ interface HeaderProps {
   theme: Theme;
   t: Translations;
   cartCount: number;
-  activeView?: 'store' | 'staff';
   onToggleLang: () => void;
   onToggleTheme: () => void;
   onOpenCart: () => void;
   onOpenOrders: () => void;
-  onOpenStaffPortal: () => void;
   onOpenStore: () => void;
 }
 
@@ -23,12 +21,10 @@ export function Header({
   theme,
   t,
   cartCount,
-  activeView = 'store',
   onToggleLang,
   onToggleTheme,
   onOpenCart,
   onOpenOrders,
-  onOpenStaffPortal,
   onOpenStore,
 }: HeaderProps) {
   const { user, signInWithGoogle, logout } = useAuth();
@@ -62,23 +58,12 @@ export function Header({
             {t.nav.craftsmanship}
           </a>
           <a
-            href="#locations"
+            href="#workflow"
             onClick={() => onOpenStore()}
             className="whitespace-nowrap shrink-0 hover:text-[#0F1115] dark:hover:text-[#F4F5F7] transition-colors py-1"
           >
-            {lang === 'ar' ? 'الفروع والتوصيل' : 'Locations'}
+            {lang === 'ar' ? 'رحلة الطلب' : 'How It Works'}
           </a>
-          <button
-            type="button"
-            onClick={onOpenStaffPortal}
-            className={`whitespace-nowrap shrink-0 py-1 transition-colors cursor-pointer ${
-              activeView === 'staff'
-                ? 'text-[#1D4ED8] dark:text-[#60A5FA] font-semibold'
-                : 'hover:text-[#0F1115] dark:hover:text-[#F4F5F7]'
-            }`}
-          >
-            {lang === 'ar' ? 'بوابة الموظفين' : 'Staff Portal'}
-          </button>
         </nav>
 
         {/* Zone 3: Account, Language, Theme & Bag */}

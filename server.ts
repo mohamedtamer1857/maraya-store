@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import type { Request, Response } from 'express';
@@ -8,13 +9,31 @@ import { optionalAuth, requireAuth } from './src/middleware/auth.ts';
 import type { AuthRequest } from './src/middleware/auth.ts';
 import { getOrCreateUser } from './src/db/users.ts';
 import {
+  addOrderStaffNote,
   createOrderRecord,
+  deleteOrderStaffNote,
   getAllOrdersForStaff,
   getOrdersForUid,
   getSalesSummaryForStaff,
+  InsufficientStockError,
   isValidOrderStatus,
   updateOrderStatusByRef,
 } from './src/db/orders.ts';
+import {
+  createProductForStaff,
+  isValidProductCategory,
+  listAllProductsForStaff,
+  listPublicProducts,
+  updateProductByIdForStaff,
+} from './src/db/products.ts';
+import {
+  createCategoryForStaff,
+  deleteCategoryBySlugForStaff,
+  listAllCategoriesForStaff,
+  listPublicCategories,
+  normalizeCategorySlug,
+  updateCategoryBySlugForStaff,
+} from './src/db/categories.ts';
 import {
   deleteStaffMemberById,
   getStaffMemberByEmail,
@@ -31,12 +50,27 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3000;
+const PRODUCT_UPLOADS_DIR = path.resolve(__dirname, 'public', 'uploads', 'products');
 
 const app = express();
 app.use(express.json({ limit: '15mb' }));
+app.use('/uploads', express.static(path.resolve(__dirname, 'public', 'uploads')));
 
 app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ ok: true });
+});
+
+app.get('/api/products', async (_req: Request, res: Response) => {
+  try {
+    const [products, categories] = await Promise.all([
+      listPublicProducts(),
+      listPublicCategories(),
+    ]);
+    res.json({ products, categories });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to load catalog.';
+    res.status(500).json({ error: message });
+  }
 });
 
 app.get('/api/maps/key', (_req: Request, res: Response) => {
@@ -248,7 +282,7 @@ app.post('/api/orders', optionalAuth, async (req: AuthRequest, res: Response) =>
       userId = dbUser?.id ?? null;
     }
 
-    await createOrderRecord({
+    const createdOrder = await createOrderRecord({
       orderRef,
       userId,
       fullName,
@@ -267,8 +301,13 @@ app.post('/api/orders', optionalAuth, async (req: AuthRequest, res: Response) =>
       phone,
       address,
       notes,
+      totalAmount: createdOrder.totalAmount,
     });
   } catch (error: unknown) {
+    if (error instanceof InsufficientStockError) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
     console.error('Order persistence failed:', error);
     res.status(500).json({ error: 'Unable to save order right now.' });
   }
@@ -371,6 +410,68 @@ app.patch('/api/staff/orders/:orderRef/status', requireAuth, async (req: AuthReq
   }
 });
 
+app.post('/api/staff/orders/:orderRef/notes', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canUpdateOrderStatus');
+    if (!staff) return;
+
+    const orderRef = typeof req.params.orderRef === 'string' ? req.params.orderRef.trim() : '';
+    if (!orderRef || orderRef.length > 40) {
+      res.status(400).json({ error: 'Invalid order reference.' });
+      return;
+    }
+
+    const body = req.body as { note?: unknown };
+    const note = typeof body.note === 'string' ? body.note.trim() : '';
+    if (!note || note.length > 1000) {
+      res.status(400).json({ error: 'Please provide a valid note (1-1000 characters).' });
+      return;
+    }
+
+    const created = await addOrderStaffNote({
+      orderRef,
+      staffEmail: staff.email,
+      staffName: staff.displayName || (typeof req.user?.name === 'string' ? req.user.name : null),
+      note,
+    });
+
+    if (!created) {
+      res.status(404).json({ error: 'Order not found.' });
+      return;
+    }
+
+    res.status(201).json({ note: created });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to save staff note.';
+    res.status(500).json({ error: message });
+  }
+});
+
+app.delete('/api/staff/orders/:orderRef/notes/:noteId', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canUpdateOrderStatus');
+    if (!staff) return;
+
+    const orderRef = typeof req.params.orderRef === 'string' ? req.params.orderRef.trim() : '';
+    const noteId = Number(req.params.noteId);
+    if (!orderRef || orderRef.length > 40 || !Number.isInteger(noteId) || noteId <= 0) {
+      res.status(400).json({ error: 'Invalid note parameters.' });
+      return;
+    }
+
+    const deleted = await deleteOrderStaffNote({ orderRef, noteId });
+    if (!deleted) {
+      res.status(404).json({ error: 'Staff note not found.' });
+      return;
+    }
+
+    res.json({ deleted: true });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to delete staff note.';
+    res.status(500).json({ error: message });
+  }
+});
+
 app.get('/api/staff/sales', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const staff = await resolveVerifiedStaff(req, res, 'canViewSales');
@@ -420,6 +521,7 @@ app.post('/api/staff/members', requireAuth, async (req: AuthRequest, res: Respon
       canUpdateOrderStatus: body.canUpdateOrderStatus === true,
       canViewSales: body.canViewSales === true,
       canManageStaff: body.canManageStaff === true,
+      canManageProducts: body.canManageProducts === true,
       isActive: body.isActive !== false,
     });
 
@@ -452,6 +554,8 @@ app.patch('/api/staff/members/:id', requireAuth, async (req: AuthRequest, res: R
       canViewSales: typeof body.canViewSales === 'boolean' ? body.canViewSales : undefined,
       canManageStaff:
         typeof body.canManageStaff === 'boolean' ? body.canManageStaff : undefined,
+      canManageProducts:
+        typeof body.canManageProducts === 'boolean' ? body.canManageProducts : undefined,
       isActive: typeof body.isActive === 'boolean' ? body.isActive : undefined,
     });
 
@@ -487,6 +591,262 @@ app.delete('/api/staff/members/:id', requireAuth, async (req: AuthRequest, res: 
     res.json({ deleted: true });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unable to delete staff member.';
+    res.status(400).json({ error: message });
+  }
+});
+
+app.get('/api/staff/products', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+    if (!staff) return;
+
+    const [products, categories] = await Promise.all([
+      listAllProductsForStaff(),
+      listAllCategoriesForStaff(),
+    ]);
+    res.json({ products, categories });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to load products catalog.';
+    res.status(500).json({ error: message });
+  }
+});
+
+app.get('/api/staff/categories', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+    if (!staff) return;
+
+    const categories = await listAllCategoriesForStaff();
+    res.json({ categories });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to load categories.';
+    res.status(500).json({ error: message });
+  }
+});
+
+app.post('/api/staff/categories', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+    if (!staff) return;
+
+    const body = req.body as Record<string, unknown>;
+    const created = await createCategoryForStaff({
+      nameAr: typeof body.nameAr === 'string' ? body.nameAr : '',
+      nameEn: typeof body.nameEn === 'string' ? body.nameEn : '',
+      slug: typeof body.slug === 'string' ? body.slug : undefined,
+    });
+    res.status(201).json({ category: created });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to create category.';
+    res.status(400).json({ error: message });
+  }
+});
+
+app.patch('/api/staff/categories/:slug', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+    if (!staff) return;
+
+    const slug = normalizeCategorySlug(typeof req.params.slug === 'string' ? req.params.slug : '');
+    if (!slug) {
+      res.status(400).json({ error: 'Invalid category slug.' });
+      return;
+    }
+
+    const body = req.body as Record<string, unknown>;
+    const updated = await updateCategoryBySlugForStaff(slug, {
+      nameAr: typeof body.nameAr === 'string' ? body.nameAr : undefined,
+      nameEn: typeof body.nameEn === 'string' ? body.nameEn : undefined,
+      isActive: typeof body.isActive === 'boolean' ? body.isActive : undefined,
+    });
+    if (!updated) {
+      res.status(404).json({ error: 'Category not found.' });
+      return;
+    }
+    res.json({ category: updated });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to update category.';
+    res.status(400).json({ error: message });
+  }
+});
+
+app.delete('/api/staff/categories/:slug', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+    if (!staff) return;
+
+    const slug = normalizeCategorySlug(typeof req.params.slug === 'string' ? req.params.slug : '');
+    if (!slug) {
+      res.status(400).json({ error: 'Invalid category slug.' });
+      return;
+    }
+
+    const deleted = await deleteCategoryBySlugForStaff(slug);
+    if (!deleted) {
+      res.status(404).json({ error: 'Category not found.' });
+      return;
+    }
+    res.json({ deleted: true });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to delete category.';
+    res.status(400).json({ error: message });
+  }
+});
+
+app.post('/api/staff/products/upload-image', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+    if (!staff) return;
+
+    const body = req.body as { dataUrl?: unknown };
+    const dataUrl = typeof body.dataUrl === 'string' ? body.dataUrl.trim() : '';
+    const match = dataUrl.match(/^data:image\/(jpeg|jpg|png|webp);base64,([A-Za-z0-9+/=]+)$/);
+    if (!match) {
+      res.status(400).json({ error: 'Only JPEG, PNG, and WebP images are supported.' });
+      return;
+    }
+
+    const buffer = Buffer.from(match[2], 'base64');
+    if (buffer.length === 0 || buffer.length > 5 * 1024 * 1024) {
+      res.status(400).json({ error: 'Image file must be under 5 MB.' });
+      return;
+    }
+
+    const isJpeg = buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+    const isPng =
+      buffer.length >= 4 &&
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47;
+    const isWebp =
+      buffer.length >= 12 &&
+      buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      buffer.subarray(8, 12).toString('ascii') === 'WEBP';
+
+    let ext: 'jpg' | 'png' | 'webp' | null = null;
+    if (isJpeg) ext = 'jpg';
+    else if (isPng) ext = 'png';
+    else if (isWebp) ext = 'webp';
+
+    if (!ext) {
+      res.status(400).json({ error: 'Invalid image binary signature.' });
+      return;
+    }
+
+    fs.mkdirSync(PRODUCT_UPLOADS_DIR, { recursive: true });
+    const filename = `prod-${crypto.randomUUID()}.${ext}`;
+    const targetPath = path.resolve(PRODUCT_UPLOADS_DIR, filename);
+    if (!targetPath.startsWith(PRODUCT_UPLOADS_DIR + path.sep)) {
+      res.status(400).json({ error: 'Invalid target file path.' });
+      return;
+    }
+
+    fs.writeFileSync(targetPath, buffer);
+    res.status(201).json({ imageUrl: `/uploads/products/${filename}` });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to upload product image.';
+    res.status(500).json({ error: message });
+  }
+});
+
+function parseSizeStockPayload(raw: unknown): Record<string, number> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const result: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const cleanKey = k.trim().slice(0, 12);
+    const num = Number(v);
+    if (cleanKey && Number.isFinite(num)) {
+      result[cleanKey] = Math.max(0, Math.round(num));
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+app.post('/api/staff/products', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+    if (!staff) return;
+
+    const body = req.body as Record<string, unknown>;
+    const sizes = Array.isArray(body.sizes)
+      ? body.sizes.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+      : ['S', 'M', 'L', 'XL'];
+
+    const created = await createProductForStaff({
+      sku: typeof body.sku === 'string' ? body.sku : '',
+      category: isValidProductCategory(body.category) ? body.category : 'outerwear',
+      image: typeof body.image === 'string' ? body.image : '',
+      priceEgp: typeof body.priceEgp === 'number' ? body.priceEgp : Number(body.priceEgp),
+      stockQty:
+        body.stockQty !== undefined && Number.isFinite(Number(body.stockQty))
+          ? Number(body.stockQty)
+          : undefined,
+      sizeStock: parseSizeStockPayload(body.sizeStock),
+      sizes,
+      titleAr: typeof body.titleAr === 'string' ? body.titleAr : '',
+      titleEn: typeof body.titleEn === 'string' ? body.titleEn : '',
+      subtitleAr: typeof body.subtitleAr === 'string' ? body.subtitleAr : '',
+      subtitleEn: typeof body.subtitleEn === 'string' ? body.subtitleEn : '',
+      descriptionAr: typeof body.descriptionAr === 'string' ? body.descriptionAr : undefined,
+      descriptionEn: typeof body.descriptionEn === 'string' ? body.descriptionEn : undefined,
+      tagAr: typeof body.tagAr === 'string' ? body.tagAr : null,
+      tagEn: typeof body.tagEn === 'string' ? body.tagEn : null,
+    });
+
+    res.status(201).json({ product: created });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to create product.';
+    res.status(400).json({ error: message });
+  }
+});
+
+app.patch('/api/staff/products/:productId', requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+    if (!staff) return;
+
+    const productId = typeof req.params.productId === 'string' ? req.params.productId.trim() : '';
+    if (!productId || productId.length > 80) {
+      res.status(400).json({ error: 'Invalid product ID.' });
+      return;
+    }
+
+    const body = req.body as Record<string, unknown>;
+    const updated = await updateProductByIdForStaff(productId, {
+      titleAr: typeof body.titleAr === 'string' ? body.titleAr : undefined,
+      titleEn: typeof body.titleEn === 'string' ? body.titleEn : undefined,
+      subtitleAr: typeof body.subtitleAr === 'string' ? body.subtitleAr : undefined,
+      subtitleEn: typeof body.subtitleEn === 'string' ? body.subtitleEn : undefined,
+      priceEgp:
+        body.priceEgp !== undefined && Number.isFinite(Number(body.priceEgp))
+          ? Number(body.priceEgp)
+          : undefined,
+      stockQty:
+        body.stockQty !== undefined && Number.isFinite(Number(body.stockQty))
+          ? Number(body.stockQty)
+          : undefined,
+      sizeStock: parseSizeStockPayload(body.sizeStock),
+      image: typeof body.image === 'string' ? body.image : undefined,
+      category: isValidProductCategory(body.category) ? body.category : undefined,
+      sizes: Array.isArray(body.sizes)
+        ? body.sizes.filter((s): s is string => typeof s === 'string')
+        : undefined,
+      tagAr: body.tagAr !== undefined ? (typeof body.tagAr === 'string' ? body.tagAr : null) : undefined,
+      tagEn: body.tagEn !== undefined ? (typeof body.tagEn === 'string' ? body.tagEn : null) : undefined,
+      descriptionAr: typeof body.descriptionAr === 'string' ? body.descriptionAr : undefined,
+      descriptionEn: typeof body.descriptionEn === 'string' ? body.descriptionEn : undefined,
+      isActive: typeof body.isActive === 'boolean' ? body.isActive : undefined,
+    });
+
+    if (!updated) {
+      res.status(404).json({ error: 'Product not found.' });
+      return;
+    }
+
+    res.json({ product: updated });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unable to update product.';
     res.status(400).json({ error: message });
   }
 });

@@ -35,6 +35,17 @@ export const orderItems = pgTable('order_items', {
   quantity: integer('quantity').notNull(),
 });
 
+export const orderStaffNotes = pgTable('order_staff_notes', {
+  id: serial('id').primaryKey(),
+  orderId: integer('order_id')
+    .references(() => orders.id, { onDelete: 'cascade' })
+    .notNull(),
+  staffEmail: text('staff_email').notNull(),
+  staffName: text('staff_name'),
+  note: text('note').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
 export const staffMembers = pgTable('staff_members', {
   id: serial('id').primaryKey(),
   email: text('email').notNull().unique(),
@@ -44,9 +55,48 @@ export const staffMembers = pgTable('staff_members', {
   canUpdateOrderStatus: integer('can_update_order_status').default(0).notNull(),
   canViewSales: integer('can_view_sales').default(0).notNull(),
   canManageStaff: integer('can_manage_staff').default(0).notNull(),
+  canManageProducts: integer('can_manage_products').default(0).notNull(),
   isActive: integer('is_active').default(1).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export const productsCatalog = pgTable('products_catalog', {
+  id: serial('id').primaryKey(),
+  productId: text('product_id').notNull().unique(),
+  sku: text('sku').notNull().unique(),
+  category: text('category').notNull(),
+  image: text('image').notNull(),
+  priceEgp: integer('price_egp').notNull(),
+  stockQty: integer('stock_qty').default(15).notNull(),
+  sizesJson: text('sizes_json').notNull(),
+  sizeStockJson: text('size_stock_json'),
+  tagAr: text('tag_ar'),
+  tagEn: text('tag_en'),
+  titleAr: text('title_ar').notNull(),
+  titleEn: text('title_en').notNull(),
+  subtitleAr: text('subtitle_ar').notNull(),
+  subtitleEn: text('subtitle_en').notNull(),
+  colorAr: text('color_ar').notNull(),
+  colorEn: text('color_en').notNull(),
+  colorHex: text('color_hex').notNull(),
+  fabricAr: text('fabric_ar').notNull(),
+  fabricEn: text('fabric_en').notNull(),
+  descriptionAr: text('description_ar').notNull(),
+  descriptionEn: text('description_en').notNull(),
+  isActive: integer('is_active').default(1).notNull(),
+  sortOrder: integer('sort_order').default(0).notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export const productCategories = pgTable('product_categories', {
+  id: serial('id').primaryKey(),
+  slug: text('slug').notNull().unique(),
+  nameAr: text('name_ar').notNull(),
+  nameEn: text('name_en').notNull(),
+  isActive: integer('is_active').default(1).notNull(),
+  sortOrder: integer('sort_order').default(0).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
 export const usersRelations = relations(users, ({ many }) => ({
@@ -59,11 +109,19 @@ export const ordersRelations = relations(orders, ({ one, many }) => ({
     references: [users.id],
   }),
   items: many(orderItems),
+  staffNotes: many(orderStaffNotes),
 }));
 
 export const orderItemsRelations = relations(orderItems, ({ one }) => ({
   order: one(orders, {
     fields: [orderItems.orderId],
+    references: [orders.id],
+  }),
+}));
+
+export const orderStaffNotesRelations = relations(orderStaffNotes, ({ one }) => ({
+  order: one(orders, {
+    fields: [orderStaffNotes.orderId],
     references: [orders.id],
   }),
 }));

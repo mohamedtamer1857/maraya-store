@@ -7,7 +7,8 @@ export type StaffPermissionKey =
   | 'canViewOrders'
   | 'canUpdateOrderStatus'
   | 'canViewSales'
-  | 'canManageStaff';
+  | 'canManageStaff'
+  | 'canManageProducts';
 
 export interface StaffMemberDTO {
   id: number;
@@ -18,6 +19,7 @@ export interface StaffMemberDTO {
   canUpdateOrderStatus: boolean;
   canViewSales: boolean;
   canManageStaff: boolean;
+  canManageProducts: boolean;
   isActive: boolean;
   isBootstrapAdmin: boolean;
   createdAt: Date;
@@ -48,6 +50,7 @@ function toDto(row: typeof staffMembers.$inferSelect): StaffMemberDTO {
     canUpdateOrderStatus: row.canUpdateOrderStatus === 1,
     canViewSales: row.canViewSales === 1,
     canManageStaff: row.canManageStaff === 1,
+    canManageProducts: row.canManageProducts === 1,
     isActive: row.isActive === 1,
     isBootstrapAdmin: normalizedEmail === BOOTSTRAP_ADMIN_EMAIL,
     createdAt: row.createdAt,
@@ -69,6 +72,7 @@ export async function ensureBootstrapAdmin(displayName?: string | null): Promise
       existing[0].canUpdateOrderStatus !== 1 ||
       existing[0].canViewSales !== 1 ||
       existing[0].canManageStaff !== 1 ||
+      existing[0].canManageProducts !== 1 ||
       existing[0].isActive !== 1
     ) {
       const [updated] = await db
@@ -80,6 +84,7 @@ export async function ensureBootstrapAdmin(displayName?: string | null): Promise
           canUpdateOrderStatus: 1,
           canViewSales: 1,
           canManageStaff: 1,
+          canManageProducts: 1,
           isActive: 1,
           updatedAt: new Date(),
         })
@@ -108,6 +113,7 @@ export async function ensureBootstrapAdmin(displayName?: string | null): Promise
       canUpdateOrderStatus: 1,
       canViewSales: 1,
       canManageStaff: 1,
+      canManageProducts: 1,
       isActive: 1,
     })
     .onConflictDoUpdate({
@@ -118,6 +124,7 @@ export async function ensureBootstrapAdmin(displayName?: string | null): Promise
         canUpdateOrderStatus: 1,
         canViewSales: 1,
         canManageStaff: 1,
+        canManageProducts: 1,
         isActive: 1,
         updatedAt: new Date(),
       },
@@ -175,6 +182,7 @@ export interface UpsertStaffInput {
   canUpdateOrderStatus: boolean;
   canViewSales: boolean;
   canManageStaff: boolean;
+  canManageProducts: boolean;
   isActive: boolean;
 }
 
@@ -198,6 +206,7 @@ export async function upsertStaffMember(input: UpsertStaffInput): Promise<StaffM
       canUpdateOrderStatus: input.canUpdateOrderStatus ? 1 : 0,
       canViewSales: input.canViewSales ? 1 : 0,
       canManageStaff: input.canManageStaff ? 1 : 0,
+      canManageProducts: input.canManageProducts ? 1 : 0,
       isActive: input.isActive ? 1 : 0,
       updatedAt: new Date(),
     })
@@ -210,6 +219,7 @@ export async function upsertStaffMember(input: UpsertStaffInput): Promise<StaffM
         canUpdateOrderStatus: input.canUpdateOrderStatus ? 1 : 0,
         canViewSales: input.canViewSales ? 1 : 0,
         canManageStaff: input.canManageStaff ? 1 : 0,
+        canManageProducts: input.canManageProducts ? 1 : 0,
         isActive: input.isActive ? 1 : 0,
         updatedAt: new Date(),
       },
@@ -280,6 +290,12 @@ export async function updateStaffMemberById(
             : 0
           : existing.canViewSales,
       canManageStaff: nextCanManageStaff ? 1 : 0,
+      canManageProducts:
+        typeof patch.canManageProducts === 'boolean'
+          ? patch.canManageProducts
+            ? 1
+            : 0
+          : existing.canManageProducts,
       isActive: nextIsActive ? 1 : 0,
       updatedAt: new Date(),
     })

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import {
+  BookmarkCheck,
   CheckCircle2,
   Loader2,
   LocateFixed,
+  LogIn,
   MapPin,
   Minus,
   Plus,
@@ -12,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { AtelierLocationsMap } from './AtelierLocationsMap';
 import type { CartItem, Language } from '../types';
 import type { Translations } from '../i18n/translations';
 
@@ -20,14 +23,12 @@ interface CartDrawerProps {
   items: CartItem[];
   lang: Language;
   t: Translations;
-  prefillAddress?: string;
-  prefillNonce?: number;
-  startAtCheckout?: boolean;
+  mapsApiKey: string;
   onClose: () => void;
-  onRequestMapPicker?: () => void;
   onUpdateQty: (productId: string, size: string, delta: number) => void;
   onRemoveItem: (productId: string, size: string) => void;
   onClearCart: () => void;
+  onOrderPlaced?: () => void;
 }
 
 interface ConfirmedOrder {
@@ -46,16 +47,14 @@ export function CartDrawer({
   items,
   lang,
   t,
-  prefillAddress,
-  prefillNonce = 0,
-  startAtCheckout = false,
+  mapsApiKey,
   onClose,
-  onRequestMapPicker,
   onUpdateQty,
   onRemoveItem,
   onClearCart,
+  onOrderPlaced,
 }: CartDrawerProps) {
-  const { user, savedProfile, getFreshToken, saveCheckoutContact } = useAuth();
+  const { user, savedProfile, signInWithGoogle, getFreshToken, saveCheckoutContact } = useAuth();
   const [step, setStep] = useState<'bag' | 'checkout' | 'confirmed'>('bag');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
@@ -63,13 +62,29 @@ export function CartDrawer({
   const [notes, setNotes] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<'cod' | 'card'>('cod');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [confirmedOrder, setConfirmedOrder] = useState<ConfirmedOrder | null>(null);
 
-  const [locationSource, setLocationSource] = useState<'none' | 'gps' | 'map' | 'manual'>('none');
+  const [locationSource, setLocationSource] = useState<'none' | 'saved' | 'gps' | 'map' | 'manual'>('none');
   const [isDetectingLocation, setIsDetectingLocation] = useState(false);
+  const [isMapPickerOpen, setIsMapPickerOpen] = useState(false);
+  const [locationSavedToast, setLocationSavedToast] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
   const autoTriedGpsRef = useRef(false);
-  const lastAppliedNonceRef = useRef(0);
+
+  const persistLocationIfSignedIn = useCallback(
+    async (nextAddress: string) => {
+      if (!user || !nextAddress.trim()) return;
+      try {
+        await saveCheckoutContact(phone.trim() || savedProfile?.phone || '', nextAddress.trim(), lang);
+        setLocationSavedToast(true);
+        window.setTimeout(() => setLocationSavedToast(false), 2200);
+      } catch {
+        // Non-blocking background save
+      }
+    },
+    [user, phone, savedProfile?.phone, lang, saveCheckoutContact]
+  );
 
   const detectCurrentLocation = useCallback(async () => {
     if (!navigator.geolocation) {
@@ -96,9 +111,16 @@ export function CartDrawer({
             data.address || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
           setAddress(resolved);
           setLocationSource('gps');
+          if (user) {
+            void persistLocationIfSignedIn(resolved);
+          }
         } catch {
-          setAddress(`${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+          const fallback = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+          setAddress(fallback);
           setLocationSource('gps');
+          if (user) {
+            void persistLocationIfSignedIn(fallback);
+          }
         } finally {
           setIsDetectingLocation(false);
         }
@@ -109,24 +131,7 @@ export function CartDrawer({
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
     );
-  }, [lang, t.cart.locationDeniedHint]);
-
-  // If returning from map picker, jump straight to checkout
-  useEffect(() => {
-    if (isOpen && startAtCheckout && items.length > 0 && step === 'bag') {
-      setStep('checkout');
-    }
-  }, [isOpen, startAtCheckout, items.length, step]);
-
-  // Apply address explicitly selected on the Egypt map
-  useEffect(() => {
-    if (prefillAddress && prefillNonce > lastAppliedNonceRef.current) {
-      lastAppliedNonceRef.current = prefillNonce;
-      setAddress(prefillAddress);
-      setLocationSource('map');
-      setLocationError(null);
-    }
-  }, [prefillAddress, prefillNonce]);
+  }, [lang, t.cart.locationDeniedHint, user, persistLocationIfSignedIn]);
 
   useEffect(() => {
     if (user && !fullName && (savedProfile?.displayName || user.displayName)) {
@@ -137,16 +142,26 @@ export function CartDrawer({
     }
   }, [user, savedProfile, fullName, phone]);
 
-  // Automatically fill customer's live GPS location when entering checkout
-  // unless they explicitly picked a custom location on the map or typed one manually.
+  // Restore saved customer address if signed in; otherwise auto-detect GPS location
   useEffect(() => {
     if (!isOpen || step !== 'checkout') return;
-    if (locationSource === 'map' || locationSource === 'manual' || locationSource === 'gps') return;
+
+    if (user && savedProfile?.savedAddress && (locationSource === 'none' || locationSource === 'saved')) {
+      if (address !== savedProfile.savedAddress) {
+        setAddress(savedProfile.savedAddress);
+      }
+      if (locationSource !== 'saved') {
+        setLocationSource('saved');
+      }
+      return;
+    }
+
+    if (locationSource !== 'none') return;
     if (autoTriedGpsRef.current) return;
 
     autoTriedGpsRef.current = true;
     void detectCurrentLocation();
-  }, [isOpen, step, locationSource, detectCurrentLocation]);
+  }, [isOpen, step, user, savedProfile?.savedAddress, locationSource, address, detectCurrentLocation]);
 
   if (!isOpen) return null;
 
@@ -172,7 +187,9 @@ export function CartDrawer({
     if (!cleanName || !cleanPhone || !cleanAddress || items.length === 0) return;
 
     setIsSubmitting(true);
+    setCheckoutError(null);
     let orderRef = `MRY-${Math.floor(1000 + Math.random() * 9000)}`;
+    let confirmedTotalLabel = totalWithShippingLabel;
 
     try {
       const token = await getFreshToken();
@@ -200,16 +217,37 @@ export function CartDrawer({
           })),
         }),
       });
-      if (res.ok) {
-        const data = (await res.json()) as { orderRef?: string };
-        if (data.orderRef) orderRef = data.orderRef;
+
+      if (!res.ok) {
+        const errData = (await res.json()) as { error?: string };
+        setCheckoutError(
+          errData.error ||
+            (lang === 'ar'
+              ? 'تعذر إتمام الطلب الآن، يرجى مراجعة الكميات المتاحة.'
+              : 'Unable to complete order. Please check available stock.')
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
+      const data = (await res.json()) as { orderRef?: string; totalAmount?: number };
+      if (data.orderRef) orderRef = data.orderRef;
+      if (typeof data.totalAmount === 'number') {
+        confirmedTotalLabel = `${data.totalAmount.toLocaleString('en-US')} ${t.catalog.currency}`;
       }
 
       if (user) {
         void saveCheckoutContact(cleanPhone, cleanAddress, lang);
       }
+      onOrderPlaced?.();
     } catch {
-      // Proceed cleanly with local confirmation reference
+      setCheckoutError(
+        lang === 'ar'
+          ? 'حدث خطأ في الاتصال بالخادم، يرجى المحاولة مرة أخرى.'
+          : 'Network error while submitting your order. Please try again.'
+      );
+      setIsSubmitting(false);
+      return;
     }
 
     setConfirmedOrder({
@@ -219,7 +257,7 @@ export function CartDrawer({
       address: cleanAddress,
       notes: cleanNotes,
       paymentMethod,
-      totalLabel: totalWithShippingLabel,
+      totalLabel: confirmedTotalLabel,
       items: items.map((i) => ({
         title: i.product.title[lang],
         size: i.size,
@@ -234,6 +272,7 @@ export function CartDrawer({
     setAddress('');
     setNotes('');
     setLocationSource('none');
+    setIsMapPickerOpen(false);
     setLocationError(null);
     autoTriedGpsRef.current = false;
     onClearCart();
@@ -244,6 +283,7 @@ export function CartDrawer({
       setStep('bag');
       setConfirmedOrder(null);
     }
+    setIsMapPickerOpen(false);
     onClose();
   };
 
@@ -256,7 +296,9 @@ export function CartDrawer({
       onClick={handleClose}
     >
       <div
-        className="flex h-full w-full max-w-md flex-col bg-white dark:bg-[#13161C] border-s border-black/[0.08] dark:border-white/[0.08] shadow-2xl"
+        className={`flex h-full w-full flex-col bg-white dark:bg-[#13161C] border-s border-black/[0.08] dark:border-white/[0.08] shadow-2xl transition-[max-width] duration-200 ${
+          step === 'checkout' && isMapPickerOpen ? 'max-w-lg' : 'max-w-md'
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Drawer Header */}
@@ -372,6 +414,11 @@ export function CartDrawer({
             </div>
           ) : step === 'checkout' ? (
             <form id="checkout-form" onSubmit={(e) => void handleCheckoutSubmit(e)} className="space-y-4">
+              {checkoutError && (
+                <div className="rounded-lg border border-red-300 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-3 text-xs font-medium text-red-700 dark:text-red-300">
+                  {checkoutError}
+                </div>
+              )}
               <div>
                 <label className="block text-xs font-medium text-[#525866] dark:text-[#9CA3AF]">
                   {t.cart.fullName}
@@ -401,7 +448,7 @@ export function CartDrawer({
               </div>
 
               <div>
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="block text-xs font-medium text-[#525866] dark:text-[#9CA3AF]">
                     {t.cart.cityAddress}
                   </label>
@@ -409,6 +456,15 @@ export function CartDrawer({
                     <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#1D4ED8] dark:text-[#60A5FA]">
                       <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
                       <span>{t.cart.detectingLocation}</span>
+                    </span>
+                  ) : locationSource === 'saved' ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                      <BookmarkCheck className="h-3 w-3" aria-hidden="true" />
+                      <span>
+                        {lang === 'ar'
+                          ? 'عنوانك المحفوظ في حسابك'
+                          : 'Saved to your account'}
+                      </span>
                     </span>
                   ) : locationSource === 'gps' ? (
                     <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
@@ -451,22 +507,84 @@ export function CartDrawer({
                     <span>{t.cart.useCurrentLocationBtn}</span>
                   </button>
 
-                  {onRequestMapPicker && (
+                  <button
+                    type="button"
+                    onClick={() => setIsMapPickerOpen((prev) => !prev)}
+                    className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-semibold transition-colors cursor-pointer ${
+                      isMapPickerOpen
+                        ? 'border-[#1D4ED8] bg-[#1D4ED8] text-white dark:border-[#3B82F6] dark:bg-[#3B82F6]'
+                        : 'border-black/[0.12] dark:border-white/[0.14] text-[#1D4ED8] dark:text-[#60A5FA] hover:border-[#1D4ED8] dark:hover:border-[#60A5FA]'
+                    }`}
+                  >
+                    <MapPin className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    <span>
+                      {isMapPickerOpen
+                        ? lang === 'ar'
+                          ? 'إخفاء الخريطة'
+                          : 'Hide Map'
+                        : t.cart.chooseLocationOnMapBtn}
+                    </span>
+                  </button>
+
+                  {user && address.trim() && address.trim() !== savedProfile?.savedAddress && (
                     <button
                       type="button"
-                      onClick={onRequestMapPicker}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-black/[0.12] dark:border-white/[0.14] px-2.5 text-[11px] font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:border-[#1D4ED8] dark:hover:border-[#60A5FA] transition-colors cursor-pointer"
+                      onClick={() => void persistLocationIfSignedIn(address)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-black/[0.12] dark:border-white/[0.14] px-2.5 text-[11px] font-semibold text-[#0F1115] dark:text-[#F4F5F7] hover:border-emerald-600 hover:text-emerald-700 dark:hover:text-emerald-400 transition-colors cursor-pointer"
                     >
-                      <MapPin className="h-3 w-3 shrink-0" aria-hidden="true" />
-                      <span>{t.cart.chooseLocationOnMapBtn}</span>
+                      <BookmarkCheck className="h-3 w-3 shrink-0" aria-hidden="true" />
+                      <span>
+                        {lang === 'ar' ? 'حفظ في حسابي' : 'Save to Account'}
+                      </span>
                     </button>
                   )}
                 </div>
+
+                {locationSavedToast && (
+                  <p className="mt-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+                    {lang === 'ar'
+                      ? 'تم حفظ العنوان في حسابك وهيفضل محفوظ معاك في الأوردرات الجاية.'
+                      : 'Location saved to your account for future orders.'}
+                  </p>
+                )}
+
+                {!user && (
+                  <button
+                    type="button"
+                    onClick={() => void signInWithGoogle()}
+                    className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-medium text-[#1D4ED8] dark:text-[#60A5FA] hover:underline cursor-pointer"
+                  >
+                    <LogIn className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    <span>
+                      {lang === 'ar'
+                        ? 'سجل دخول بجوجل عشان اللوكيشن يفضل محفوظ مع حسابك دايماً'
+                        : 'Sign in with Google to keep this location saved to your profile'}
+                    </span>
+                  </button>
+                )}
 
                 {locationError && (
                   <p className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-300">
                     {locationError}
                   </p>
+                )}
+
+                {isMapPickerOpen && (
+                  <div className="mt-3 rounded-xl border border-black/[0.08] dark:border-white/[0.1] bg-[#F8F8FA] dark:bg-[#0B0D11] p-3">
+                    <AtelierLocationsMap
+                      compact
+                      lang={lang}
+                      apiKey={mapsApiKey}
+                      onSelectDeliveryAddress={(pickedAddr) => {
+                        setAddress(pickedAddr);
+                        setLocationSource('map');
+                        setLocationError(null);
+                        if (user) {
+                          void persistLocationIfSignedIn(pickedAddr);
+                        }
+                      }}
+                    />
+                  </div>
                 )}
               </div>
 
@@ -568,9 +686,18 @@ export function CartDrawer({
                           </span>
                           <button
                             type="button"
+                            disabled={(() => {
+                              const sizeLimit =
+                                item.product.sizeStock && typeof item.product.sizeStock[item.size] === 'number'
+                                  ? item.product.sizeStock[item.size]
+                                  : typeof item.product.stockQty === 'number'
+                                  ? item.product.stockQty
+                                  : null;
+                              return sizeLimit !== null && item.quantity >= sizeLimit;
+                            })()}
                             onClick={() => onUpdateQty(item.product.id, item.size, 1)}
                             aria-label="Increase quantity"
-                            className="inline-flex h-8 w-8 items-center justify-center text-[#525866] hover:text-[#0F1115] dark:text-[#9CA3AF] dark:hover:text-white cursor-pointer"
+                            className="inline-flex h-8 w-8 items-center justify-center text-[#525866] hover:text-[#0F1115] dark:text-[#9CA3AF] dark:hover:text-white disabled:opacity-35 disabled:cursor-not-allowed cursor-pointer"
                           >
                             <Plus className="h-3 w-3" aria-hidden="true" />
                           </button>

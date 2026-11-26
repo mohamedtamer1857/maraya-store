@@ -5,6 +5,7 @@ import type { Translations } from '../i18n/translations';
 
 interface ProductDetailModalProps {
   product: Product | null;
+  categoryLabel?: string;
   lang: Language;
   t: Translations;
   onClose: () => void;
@@ -13,6 +14,7 @@ interface ProductDetailModalProps {
 
 export function ProductDetailModal({
   product,
+  categoryLabel,
   lang,
   t,
   onClose,
@@ -22,11 +24,27 @@ export function ProductDetailModal({
 
   if (!product) return null;
 
-  const activeSize = product.sizes.includes(selectedSize)
-    ? selectedSize
-    : product.sizes[0];
+  const getSizeQty = (sz: string) => {
+    if (product.sizeStock && typeof product.sizeStock[sz] === 'number') {
+      return product.sizeStock[sz];
+    }
+    return typeof product.stockQty === 'number' ? product.stockQty : 15;
+  };
+
+  const firstAvailableSize = product.sizes.find((sz) => getSizeQty(sz) > 0) ?? product.sizes[0];
+  const activeSize =
+    product.sizes.includes(selectedSize) && getSizeQty(selectedSize) > 0
+      ? selectedSize
+      : firstAvailableSize;
 
   const price = `${product.priceEgp.toLocaleString('en-US')} ${t.catalog.currency}`;
+  const totalStock = product.sizeStock
+    ? product.sizes.reduce((sum, sz) => sum + (product.sizeStock?.[sz] ?? 0), 0)
+    : typeof product.stockQty === 'number'
+    ? product.stockQty
+    : 15;
+  const activeSizeStock = getSizeQty(activeSize);
+  const isOutOfStock = totalStock <= 0 || activeSizeStock <= 0;
 
   return (
     <div
@@ -62,10 +80,26 @@ export function ProductDetailModal({
         {/* Right / End Contiguous Purchase Module */}
         <div className="flex flex-col justify-between p-6 sm:p-8">
           <div>
-            <div className="flex items-center gap-2 text-xs text-[#525866] dark:text-[#9CA3AF]">
-              <span>{t.catalog.categories[product.category]}</span>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-[#525866] dark:text-[#9CA3AF]">
+              <span>
+                {categoryLabel ||
+                  (t.catalog.categories as Record<string, string>)[product.category] ||
+                  product.category}
+              </span>
               <span aria-hidden="true">·</span>
               <span className="tabular-nums">{product.sku}</span>
+              <span aria-hidden="true">·</span>
+              {totalStock <= 0 ? (
+                <span className="font-semibold text-red-600 dark:text-red-400">
+                  {lang === 'ar' ? 'نفذت الكمية' : 'Out of Stock'}
+                </span>
+              ) : (
+                <span className="font-medium text-emerald-700 dark:text-emerald-400 tabular-nums">
+                  {lang === 'ar'
+                    ? `متوفر لمقاس ${activeSize}: ${activeSizeStock}`
+                    : `In stock (${activeSize}): ${activeSizeStock}`}
+                </span>
+              )}
             </div>
 
             <h2 className="mt-2 font-editorial text-2xl sm:text-3xl font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
@@ -111,19 +145,37 @@ export function ProductDetailModal({
               </span>
               <div className="mt-2.5 flex flex-wrap gap-2">
                 {product.sizes.map((sz) => {
-                  const isSelected = sz === activeSize;
+                  const szQty = getSizeQty(sz);
+                  const szOut = szQty <= 0;
+                  const isSelected = sz === activeSize && !szOut;
                   return (
                     <button
                       key={sz}
                       type="button"
+                      disabled={szOut}
                       onClick={() => setSelectedSize(sz)}
-                      className={`inline-flex h-10 min-w-[44px] items-center justify-center rounded-lg px-3 text-xs font-semibold transition-colors cursor-pointer ${
-                        isSelected
-                          ? 'bg-[#0F1115] text-white dark:bg-[#F4F5F7] dark:text-[#0B0D11]'
-                          : 'border border-black/[0.12] text-[#0F1115] hover:bg-black/[0.04] dark:border-white/[0.14] dark:text-[#F4F5F7] dark:hover:bg-white/[0.06]'
+                      className={`inline-flex min-h-[44px] min-w-[56px] flex-col items-center justify-center rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                        szOut
+                          ? 'border border-red-300/70 dark:border-red-900/60 bg-red-50/70 dark:bg-red-950/20 text-red-600/85 dark:text-red-400/85 cursor-not-allowed'
+                          : isSelected
+                          ? 'bg-[#0F1115] text-white dark:bg-[#F4F5F7] dark:text-[#0B0D11] cursor-pointer'
+                          : 'border border-black/[0.12] text-[#0F1115] hover:bg-black/[0.04] dark:border-white/[0.14] dark:text-[#F4F5F7] dark:hover:bg-white/[0.06] cursor-pointer'
                       }`}
                     >
-                      {sz}
+                      <span className={szOut ? 'line-through' : ''}>{sz}</span>
+                      {szOut ? (
+                        <span className="text-[10px] font-medium leading-tight">
+                          {lang === 'ar' ? 'نفذت الكمية' : 'Out of Stock'}
+                        </span>
+                      ) : (
+                        <span
+                          className={`text-[10px] font-normal tabular-nums ${
+                            isSelected ? 'opacity-80' : 'text-[#525866] dark:text-[#9CA3AF]'
+                          }`}
+                        >
+                          {szQty}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -135,14 +187,22 @@ export function ProductDetailModal({
           <div className="mt-8">
             <button
               type="button"
+              disabled={isOutOfStock}
               onClick={() => {
+                if (isOutOfStock) return;
                 onAddToBag(product, activeSize);
                 onClose();
               }}
-              className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#0F1115] px-5 text-sm font-semibold text-white hover:bg-[#1D4ED8] dark:bg-[#F4F5F7] dark:text-[#0B0D11] dark:hover:bg-[#60A5FA] transition-colors whitespace-nowrap cursor-pointer"
+              className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#0F1115] px-5 text-sm font-semibold text-white hover:bg-[#1D4ED8] dark:bg-[#F4F5F7] dark:text-[#0B0D11] dark:hover:bg-[#60A5FA] disabled:opacity-45 disabled:cursor-not-allowed transition-colors whitespace-nowrap cursor-pointer"
             >
               <ShoppingBag className="h-4 w-4 shrink-0" aria-hidden="true" />
-              <span>{t.productModal.addToBag}</span>
+              <span>
+                {isOutOfStock
+                  ? lang === 'ar'
+                    ? 'غير متاح حالياً بالمخزون'
+                    : 'Currently Out of Stock'
+                  : t.productModal.addToBag}
+              </span>
             </button>
           </div>
         </div>

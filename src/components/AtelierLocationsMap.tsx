@@ -30,6 +30,7 @@ interface AtelierLocationsMapProps {
   lang: Language;
   apiKey: string;
   onSelectDeliveryAddress: (address: string) => void;
+  compact?: boolean;
   isPickingForCheckout?: boolean;
   onConfirmCheckoutLocation?: () => void;
 }
@@ -102,11 +103,13 @@ function PlacePin({
 function MapWorkspace({
   lang,
   onSelectDeliveryAddress,
+  compact = false,
   isPickingForCheckout,
   onConfirmCheckoutLocation,
 }: {
   lang: Language;
   onSelectDeliveryAddress: (address: string) => void;
+  compact?: boolean;
   isPickingForCheckout?: boolean;
   onConfirmCheckoutLocation?: () => void;
 }) {
@@ -466,9 +469,9 @@ function MapWorkspace({
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-12">
+    <div className={compact ? 'flex flex-col gap-3' : 'grid gap-6 lg:grid-cols-12'}>
       {/* Left/Start Panel: Address Search, Store List & Route Summary */}
-      <div className="lg:col-span-5 flex flex-col gap-4">
+      <div className={compact ? 'flex flex-col gap-2.5' : 'lg:col-span-5 flex flex-col gap-4'}>
         <form onSubmit={(e) => void handleSearchSubmit(e)} className="relative">
           <Search
             className="pointer-events-none absolute top-1/2 start-3.5 h-4 w-4 -translate-y-1/2 text-[#525866] dark:text-[#9CA3AF]"
@@ -572,57 +575,65 @@ function MapWorkspace({
           <p className="text-xs text-red-600 dark:text-red-400">{mapError}</p>
         )}
 
-        <div className="space-y-2.5">
-          <p className="text-xs font-semibold text-[#525866] dark:text-[#9CA3AF]">
-            {lang === 'ar' ? 'فروع ومواقع الأزياء في مصر' : 'Fashion Locations in Egypt'}
-          </p>
-          {places.length === 0 ? (
-            <div className="rounded-xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-[#13161C] p-4 text-xs text-[#525866] dark:text-[#9CA3AF]">
-              {lang === 'ar' ? 'جاري تحميل الفروع في مصر...' : 'Loading Egypt locations...'}
-            </div>
-          ) : (
-            <div className="space-y-2 max-h-[280px] overflow-y-auto pe-1">
-              {places.map((place) => {
-                const isSelected = selectedPlace?.id === place.id;
-                return (
-                  <button
-                    key={place.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedPlace(place);
-                      map?.panTo(place.position);
-                      map?.setZoom(14);
-                    }}
-                    className={`w-full rounded-xl border p-3.5 text-start transition-colors cursor-pointer ${
-                      isSelected
-                        ? 'border-[#1D4ED8] bg-[#1D4ED8]/5 dark:border-[#60A5FA] dark:bg-[#3B82F6]/10'
-                        : 'border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#13161C] hover:border-black/20 dark:hover:border-white/20'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <span className="text-xs font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
-                        {place.name}
-                      </span>
-                      {typeof place.rating === 'number' && (
-                        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-600 shrink-0">
-                          <Star className="h-3 w-3 fill-amber-500 text-amber-500" />
-                          {place.rating.toFixed(1)}
+        {!compact && (
+          <div className="space-y-2.5">
+            <p className="text-xs font-semibold text-[#525866] dark:text-[#9CA3AF]">
+              {lang === 'ar' ? 'فروع ومواقع الأزياء في مصر' : 'Fashion Locations in Egypt'}
+            </p>
+            {places.length === 0 ? (
+              <div className="rounded-xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-[#13161C] p-4 text-xs text-[#525866] dark:text-[#9CA3AF]">
+                {lang === 'ar' ? 'جاري تحميل الفروع في مصر...' : 'Loading Egypt locations...'}
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-[280px] overflow-y-auto pe-1">
+                {places.map((place) => {
+                  const isSelected = selectedPlace?.id === place.id;
+                  return (
+                    <button
+                      key={place.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedPlace(place);
+                        map?.panTo(place.position);
+                        map?.setZoom(14);
+                      }}
+                      className={`w-full rounded-xl border p-3.5 text-start transition-colors cursor-pointer ${
+                        isSelected
+                          ? 'border-[#1D4ED8] bg-[#1D4ED8]/5 dark:border-[#60A5FA] dark:bg-[#3B82F6]/10'
+                          : 'border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#13161C] hover:border-black/20 dark:hover:border-white/20'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="text-xs font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
+                          {place.name}
                         </span>
-                      )}
-                    </div>
-                    <p className="mt-1 text-[11px] text-[#525866] dark:text-[#9CA3AF] line-clamp-2">
-                      {place.address}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
+                        {typeof place.rating === 'number' && (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-600 shrink-0">
+                            <Star className="h-3 w-3 fill-amber-500 text-amber-500" />
+                            {place.rating.toFixed(1)}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-[11px] text-[#525866] dark:text-[#9CA3AF] line-clamp-2">
+                        {place.address}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Right/End Panel: Interactive Map Focused Strictly on Egypt */}
-      <div className="lg:col-span-7 overflow-hidden rounded-2xl border border-black/[0.08] dark:border-white/[0.1] bg-[#EBEDF0] dark:bg-[#13161C] h-[380px] sm:h-[440px]">
+      <div
+        className={
+          compact
+            ? 'overflow-hidden rounded-xl border border-black/[0.08] dark:border-white/[0.1] bg-[#EBEDF0] dark:bg-[#13161C] h-[230px]'
+            : 'lg:col-span-7 overflow-hidden rounded-2xl border border-black/[0.08] dark:border-white/[0.1] bg-[#EBEDF0] dark:bg-[#13161C] h-[380px] sm:h-[440px]'
+        }
+      >
         <GoogleMap
           mapId="DEMO_MAP_ID"
           defaultCenter={DEFAULT_CENTER}
@@ -660,12 +671,13 @@ export function AtelierLocationsMap({
   lang,
   apiKey,
   onSelectDeliveryAddress,
+  compact = false,
   isPickingForCheckout,
   onConfirmCheckoutLocation,
 }: AtelierLocationsMapProps) {
   if (!apiKey) {
     return (
-      <div className="rounded-2xl border border-black/[0.08] dark:border-white/[0.1] bg-white dark:bg-[#13161C] p-8 text-center text-sm text-[#525866] dark:text-[#9CA3AF]">
+      <div className="rounded-2xl border border-black/[0.08] dark:border-white/[0.1] bg-white dark:bg-[#13161C] p-6 text-center text-xs text-[#525866] dark:text-[#9CA3AF]">
         {lang === 'ar'
           ? 'مفتاح خرائط جوجل مش متاح دلوقتي. اعمل ريستارت للسيرفر أو اتأكد من إعدادات الخرائط.'
           : 'Google Maps API key is not active yet. Restart the server or check Maps setup.'}
@@ -677,6 +689,7 @@ export function AtelierLocationsMap({
     <APIProvider apiKey={apiKey} language={lang} region="EG" libraries={['places', 'routes', 'marker']}>
       <MapWorkspace
         lang={lang}
+        compact={compact}
         onSelectDeliveryAddress={onSelectDeliveryAddress}
         isPickingForCheckout={isPickingForCheckout}
         onConfirmCheckoutLocation={onConfirmCheckoutLocation}
