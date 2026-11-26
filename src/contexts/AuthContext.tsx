@@ -39,7 +39,7 @@ interface AuthContextValue {
   authError: string | null;
   signInWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
-  getFreshToken: () => Promise<string | null>;
+  getFreshToken: (forceRefresh?: boolean) => Promise<string | null>;
   toggleWishlist: (product: Product) => Promise<void>;
   saveCheckoutContact: (phone: string, savedAddress: string, preferredLang: Language) => Promise<void>;
 }
@@ -134,10 +134,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const token = await cred.user.getIdToken();
       setIdToken(token);
 
-      await fetch('/api/me/sync', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      try {
+        await fetch('/api/me/sync', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } catch {
+        // Non-fatal sync retry on next API call
+      }
 
       const infoPath = `users/${cred.user.uid}/private/info`;
       const displayName = (cred.user.displayName || 'MARAYA Guest').slice(0, 120);
@@ -173,9 +177,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSavedProfile(null);
   }, []);
 
-  const getFreshToken = useCallback(async () => {
+  const getFreshToken = useCallback(async (forceRefresh = false) => {
     if (!auth.currentUser) return null;
-    const token = await auth.currentUser.getIdToken();
+    const token = await auth.currentUser.getIdToken(forceRefresh);
     setIdToken(token);
     return token;
   }, []);

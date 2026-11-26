@@ -196,7 +196,25 @@ function buildGoogleMapsDirectionsUrl(address: string): string {
   return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}`;
 }
 
+class ProxyRedirectError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProxyRedirectError';
+  }
+}
+
 async function parseApiJson<T>(res: Response, lang: Language): Promise<T> {
+  if (
+    res.redirected &&
+    (res.url.includes('__cookie_check') || res.url.includes('applet-auth-bridge'))
+  ) {
+    throw new ProxyRedirectError(
+      lang === 'ar'
+        ? 'المتصفح منع كوكيز المعاينة داخل الإطار الحالي. افتح المتجر في نافذة جديدة أو حدث الصفحة ثم أعد المحاولة.'
+        : 'Your browser blocked preview session cookies inside this embedded frame. Open the app in a new tab or refresh the page.'
+    );
+  }
+
   const rawText = await res.text();
   if (!rawText) {
     return {} as T;
@@ -204,10 +222,17 @@ async function parseApiJson<T>(res: Response, lang: Language): Promise<T> {
   try {
     return JSON.parse(rawText) as T;
   } catch {
+    if (rawText.includes('Cookie check') || rawText.includes('__aistudio')) {
+      throw new ProxyRedirectError(
+        lang === 'ar'
+          ? 'المتصفح منع كوكيز المعاينة داخل الإطار الحالي. افتح المتجر في نافذة جديدة أو حدث الصفحة ثم أعد المحاولة.'
+          : 'Your browser blocked preview session cookies inside this embedded frame. Open the app in a new tab or refresh the page.'
+      );
+    }
     throw new Error(
       lang === 'ar'
-        ? 'تعذر الاتصال بخادم الموظفين حالياً (قد يكون الخادم يُعاد تشغيله أو تحتاج الصفحة لتحديث). اضغط "تحديث الصفحة" أو "إعادة التحقق".'
-        : 'Unable to reach the staff server right now (the server may be restarting or the preview session expired). Refresh the page or click Re-check Access.'
+        ? `تعذر الاتصال بخادم الموظفين حالياً (HTTP ${res.status}). اضغط "تحديث الصفحة" أو افتح التطبيق في نافذة جديدة.`
+        : `Unable to reach the staff server right now (HTTP ${res.status}). Refresh the page or open in a new tab.`
     );
   }
 }
@@ -219,6 +244,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
   const [staffProfile, setStaffProfile] = useState<StaffProfile | null>(null);
   const [verifiedEmail, setVerifiedEmail] = useState<string | null>(null);
   const [portalError, setPortalError] = useState<string | null>(null);
+  const [needsNewTab, setNeedsNewTab] = useState(false);
   const [activeTab, setActiveTab] = useState<'orders' | 'products' | 'team'>('orders');
 
   // Orders & Sales state
@@ -284,41 +310,91 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     if (!user) {
       setStaffProfile(null);
       setVerifiedEmail(null);
+      setNeedsNewTab(false);
       return;
     }
 
     setStaffLoading(true);
     setPortalError(null);
+    setNeedsNewTab(false);
     try {
-      const token = await getFreshToken();
-      if (!token) {
-        setPortalError(
-          lang === 'ar'
-            ? 'تعذر الحصول على رمز التحقق من حساب جوجل. جرّب تحديث الصفحة أو تسجيل الدخول مجدداً.'
-            : 'Unable to retrieve Google verification token. Try refreshing or signing in again.'
-        );
-        return;
+      let forceRefresh = false;
+      let lastError: unknown = null;
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const token = await getFreshToken(forceRefresh);
+          if (!token) {
+            setPortalError(
+              lang === 'ar'
+                ? 'تعذر الحصول على رمز التحقق من حساب جوجل. جرّب تحديث الصفحة أو تسجيل الدخول مجدداً.'
+                : 'Unable to retrieve Google verification token. Try refreshing or signing in again.'
+            );
+            return;
+          }
+
+          const res = await fetch('/api/staff/me', {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: 'no-store',
+          });
+
+          if (res.status === 401 && !forceRefresh) {
+            forceRefresh = true;
+            continue;
+          }
+
+          if (res.status >= 502 && res.status <= 504 && attempt < 2) {
+            await new Promise((r) => setTimeout(r, 650 * (attempt + 1)));
+            continue;
+          }
+
+          const data = await parseApiJson<{
+            isStaff?: boolean;
+            staff?: StaffProfile | null;
+            email?: string | null;
+            error?: string;
+          }>(res, lang);
+
+          if (!res.ok) {
+            if (res.status >= 500 && attempt < 2) {
+              await new Promise((r) => setTimeout(r, 650 * (attempt + 1)));
+              continue;
+            }
+            setPortalError(data.error || 'Unable to verify staff account.');
+            setStaffProfile(null);
+          } else {
+            setVerifiedEmail(data.email || user.email || null);
+            setStaffProfile(data.isStaff && data.staff ? data.staff : null);
+          }
+          return;
+        } catch (err) {
+          lastError = err;
+          if (err instanceof ProxyRedirectError) {
+            setNeedsNewTab(true);
+            throw err;
+          }
+          if (attempt < 2) {
+            await new Promise((r) => setTimeout(r, 650 * (attempt + 1)));
+            continue;
+          }
+          throw err;
+        }
       }
 
-      const res = await fetch('/api/staff/me', {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: 'no-store',
-      });
-      const data = await parseApiJson<{
-        isStaff?: boolean;
-        staff?: StaffProfile | null;
-        email?: string | null;
-        error?: string;
-      }>(res, lang);
-      if (!res.ok) {
-        setPortalError(data.error || 'Unable to verify staff account.');
-        setStaffProfile(null);
-      } else {
-        setVerifiedEmail(data.email || user.email || null);
-        setStaffProfile(data.isStaff && data.staff ? data.staff : null);
+      if (lastError) {
+        throw lastError;
       }
     } catch (err) {
-      setPortalError(err instanceof Error ? err.message : 'Unable to reach staff server.');
+      if (err instanceof TypeError) {
+        setNeedsNewTab(true);
+      }
+      setPortalError(
+        err instanceof Error
+          ? err.message
+          : lang === 'ar'
+          ? 'تعذر الاتصال بخادم الموظفين حالياً.'
+          : 'Unable to reach staff server.'
+      );
     } finally {
       setStaffLoading(false);
     }
@@ -452,7 +528,10 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     if (staffProfile.canManageStaff) {
       void loadTeamMembers(staffProfile);
     }
+  }, [staffProfile, loadDashboardData, loadCatalogProducts, loadTeamMembers]);
 
+  useEffect(() => {
+    if (!staffProfile) return;
     if (activeTab === 'team' && !staffProfile.canManageStaff) {
       setActiveTab(staffProfile.canViewOrders ? 'orders' : staffProfile.canManageProducts ? 'products' : 'orders');
     } else if (activeTab === 'products' && !staffProfile.canManageProducts) {
@@ -460,7 +539,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     } else if (activeTab === 'orders' && !staffProfile.canViewOrders && staffProfile.canManageProducts) {
       setActiveTab('products');
     }
-  }, [staffProfile, loadDashboardData, loadCatalogProducts, loadTeamMembers, activeTab]);
+  }, [staffProfile, activeTab]);
 
   const handleRolePresetChange = (role: StaffRole) => {
     setNewRole(role);
@@ -1363,6 +1442,17 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
               <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
               <span>{lang === 'ar' ? 'تسجيل الخروج' : 'Sign Out'}</span>
             </button>
+            {portalError && needsNewTab && (
+              <a
+                href={typeof window !== 'undefined' ? window.location.href : '#/staff'}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-[#1D4ED8]/30 bg-[#1D4ED8]/10 px-4 text-xs font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:bg-[#1D4ED8]/15 whitespace-nowrap"
+              >
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>{lang === 'ar' ? 'فتح في نافذة جديدة' : 'Open in New Tab'}</span>
+              </a>
+            )}
             {portalError && (
               <button
                 type="button"

@@ -134,6 +134,39 @@ export async function ensureBootstrapAdmin(displayName?: string | null): Promise
   return toDto(created);
 }
 
+function isTransientDbError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = 'code' in err ? String((err as { code?: unknown }).code || '') : '';
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    code === 'ECONNREFUSED' ||
+    code === 'ECONNRESET' ||
+    code === 'ENOENT' ||
+    code === 'ETIMEDOUT' ||
+    code === '57P01' ||
+    msg.includes('Connection terminated') ||
+    msg.includes('connect ECONNREFUSED') ||
+    msg.includes('timeout exceeded')
+  );
+}
+
+async function withDbRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1 && isTransientDbError(err)) {
+        await new Promise((r) => setTimeout(r, 350 * (i + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 export async function getStaffMemberByEmail(
   rawEmail: string,
   displayName?: string | null
@@ -141,28 +174,30 @@ export async function getStaffMemberByEmail(
   const email = rawEmail.trim().toLowerCase();
   if (!email) return null;
 
-  if (email === BOOTSTRAP_ADMIN_EMAIL) {
-    return ensureBootstrapAdmin(displayName);
-  }
+  return withDbRetry(async () => {
+    if (email === BOOTSTRAP_ADMIN_EMAIL) {
+      return ensureBootstrapAdmin(displayName);
+    }
 
-  const rows = await db
-    .select()
-    .from(staffMembers)
-    .where(eq(staffMembers.email, email))
-    .limit(1);
+    const rows = await db
+      .select()
+      .from(staffMembers)
+      .where(eq(staffMembers.email, email))
+      .limit(1);
 
-  if (!rows[0]) return null;
+    if (!rows[0]) return null;
 
-  if (displayName && rows[0].displayName !== displayName) {
-    const [updated] = await db
-      .update(staffMembers)
-      .set({ displayName, updatedAt: new Date() })
-      .where(eq(staffMembers.id, rows[0].id))
-      .returning();
-    return toDto(updated);
-  }
+    if (displayName && rows[0].displayName !== displayName) {
+      const [updated] = await db
+        .update(staffMembers)
+        .set({ displayName, updatedAt: new Date() })
+        .where(eq(staffMembers.id, rows[0].id))
+        .returning();
+      return toDto(updated);
+    }
 
-  return toDto(rows[0]);
+    return toDto(rows[0]);
+  });
 }
 
 export async function listStaffMembers(): Promise<StaffMemberDTO[]> {

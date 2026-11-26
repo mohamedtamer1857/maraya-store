@@ -855,6 +855,11 @@ app.use('/api', (_req: Request, res: Response) => {
   res.status(404).json({ error: 'API endpoint not found.' });
 });
 
+app.use('/api', (err: unknown, _req: Request, res: Response, _next: express.NextFunction) => {
+  const message = err instanceof Error ? err.message : 'Unexpected server error.';
+  res.status(500).json({ error: message });
+});
+
 async function startServer() {
   const isDev = process.env.VITE_DEV === 'true';
 
