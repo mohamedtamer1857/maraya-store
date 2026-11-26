@@ -851,6 +851,10 @@ app.patch('/api/staff/products/:productId', requireAuth, async (req: AuthRequest
   }
 });
 
+app.use('/api', (_req: Request, res: Response) => {
+  res.status(404).json({ error: 'API endpoint not found.' });
+});
+
 async function startServer() {
   const isDev = process.env.VITE_DEV === 'true';
 

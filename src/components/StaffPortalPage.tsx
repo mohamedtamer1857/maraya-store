@@ -196,6 +196,22 @@ function buildGoogleMapsDirectionsUrl(address: string): string {
   return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}`;
 }
 
+async function parseApiJson<T>(res: Response, lang: Language): Promise<T> {
+  const rawText = await res.text();
+  if (!rawText) {
+    return {} as T;
+  }
+  try {
+    return JSON.parse(rawText) as T;
+  } catch {
+    throw new Error(
+      lang === 'ar'
+        ? 'تعذر الاتصال بخادم الموظفين حالياً (قد يكون الخادم يُعاد تشغيله أو تحتاج الصفحة لتحديث). اضغط "تحديث الصفحة" أو "إعادة التحقق".'
+        : 'Unable to reach the staff server right now (the server may be restarting or the preview session expired). Refresh the page or click Re-check Access.'
+    );
+  }
+}
+
 export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: StaffPortalPageProps) {
   const { user, authReady, authError, signInWithGoogle, logout, getFreshToken } = useAuth();
 
@@ -275,17 +291,25 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     setPortalError(null);
     try {
       const token = await getFreshToken();
-      if (!token) return;
+      if (!token) {
+        setPortalError(
+          lang === 'ar'
+            ? 'تعذر الحصول على رمز التحقق من حساب جوجل. جرّب تحديث الصفحة أو تسجيل الدخول مجدداً.'
+            : 'Unable to retrieve Google verification token. Try refreshing or signing in again.'
+        );
+        return;
+      }
 
       const res = await fetch('/api/staff/me', {
         headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
       });
-      const data = (await res.json()) as {
+      const data = await parseApiJson<{
         isStaff?: boolean;
         staff?: StaffProfile | null;
         email?: string | null;
         error?: string;
-      };
+      }>(res, lang);
       if (!res.ok) {
         setPortalError(data.error || 'Unable to verify staff account.');
         setStaffProfile(null);
@@ -298,7 +322,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     } finally {
       setStaffLoading(false);
     }
-  }, [user, getFreshToken]);
+  }, [user, getFreshToken, lang]);
 
   const loadDashboardData = useCallback(
     async (profile: StaffProfile) => {
@@ -313,13 +337,12 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
 
         if (profile.canViewOrders) {
           requests.push(
-            fetch('/api/staff/orders', { headers })
+            fetch('/api/staff/orders', { headers, cache: 'no-store' })
               .then(async (r) => {
+                const json = await parseApiJson<{ orders?: StaffOrderRecord[]; error?: string }>(r, lang);
                 if (!r.ok) {
-                  const errData = (await r.json()) as { error?: string };
-                  throw new Error(errData.error || 'Failed to load orders.');
+                  throw new Error(json.error || 'Failed to load orders.');
                 }
-                const json = (await r.json()) as { orders?: StaffOrderRecord[] };
                 setOrders(json.orders ?? []);
               })
           );
@@ -329,13 +352,12 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
 
         if (profile.canViewSales) {
           requests.push(
-            fetch('/api/staff/sales', { headers })
+            fetch('/api/staff/sales', { headers, cache: 'no-store' })
               .then(async (r) => {
+                const json = await parseApiJson<{ summary?: SalesSummary | null; error?: string }>(r, lang);
                 if (!r.ok) {
-                  const errData = (await r.json()) as { error?: string };
-                  throw new Error(errData.error || 'Failed to load sales summary.');
+                  throw new Error(json.error || 'Failed to load sales summary.');
                 }
-                const json = (await r.json()) as { summary?: SalesSummary | null };
                 setSalesSummary(json.summary ?? null);
               })
           );
@@ -350,7 +372,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         setDataLoading(false);
       }
     },
-    [getFreshToken]
+    [getFreshToken, lang]
   );
 
   const loadTeamMembers = useCallback(
@@ -362,8 +384,9 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         if (!token) return;
         const res = await fetch('/api/staff/members', {
           headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store',
         });
-        const data = (await res.json()) as { members?: StaffProfile[]; error?: string };
+        const data = await parseApiJson<{ members?: StaffProfile[]; error?: string }>(res, lang);
         if (!res.ok) {
           setPortalError(data.error || 'Unable to load staff permissions.');
         } else {
@@ -375,7 +398,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         setTeamLoading(false);
       }
     },
-    [getFreshToken]
+    [getFreshToken, lang]
   );
 
   const loadCatalogProducts = useCallback(
@@ -390,12 +413,13 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         if (!token) return;
         const res = await fetch('/api/staff/products', {
           headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store',
         });
-        const data = (await res.json()) as {
+        const data = await parseApiJson<{
           products?: Product[];
           categories?: StoreCategory[];
           error?: string;
-        };
+        }>(res, lang);
         if (!res.ok) {
           setPortalError(data.error || 'Unable to load products catalog.');
         } else {
@@ -410,7 +434,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         setProductsLoading(false);
       }
     },
-    [getFreshToken]
+    [getFreshToken, lang]
   );
 
   useEffect(() => {
@@ -463,7 +487,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         },
         body: JSON.stringify({ status: nextStatus }),
       });
-      const data = (await res.json()) as { error?: string };
+      const data = await parseApiJson<{ error?: string }>(res, lang);
       if (!res.ok) {
         setPortalError(data.error || 'Failed to update order status.');
         return;
@@ -480,7 +504,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
           headers: { Authorization: `Bearer ${token}` },
         });
         if (salesRes.ok) {
-          const salesData = (await salesRes.json()) as { summary?: SalesSummary | null };
+          const salesData = await parseApiJson<{ summary?: SalesSummary | null }>(salesRes, lang);
           setSalesSummary(salesData.summary ?? null);
         }
       }
@@ -525,7 +549,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
           isActive: true,
         }),
       });
-      const data = (await res.json()) as { member?: StaffProfile; error?: string };
+      const data = await parseApiJson<{ member?: StaffProfile; error?: string }>(res, lang);
       if (!res.ok) {
         setPortalError(data.error || 'Unable to save staff member.');
         return;
@@ -571,7 +595,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         },
         body: JSON.stringify({ [field]: nextValue }),
       });
-      const data = (await res.json()) as { member?: StaffProfile; error?: string };
+      const data = await parseApiJson<{ member?: StaffProfile; error?: string }>(res, lang);
       if (!res.ok) {
         setPortalError(data.error || 'Permission update rejected.');
         return;
@@ -609,7 +633,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
           canManageProducts: preset.canManageProducts,
         }),
       });
-      const data = (await res.json()) as { member?: StaffProfile; error?: string };
+      const data = await parseApiJson<{ member?: StaffProfile; error?: string }>(res, lang);
       if (!res.ok) {
         setPortalError(data.error || 'Role update failed.');
         return;
@@ -632,7 +656,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
-      const data = (await res.json()) as { error?: string };
+      const data = await parseApiJson<{ error?: string }>(res, lang);
       if (!res.ok) {
         setPortalError(data.error || 'Unable to delete staff member.');
         return;
@@ -707,7 +731,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
           body: JSON.stringify({ note: cleanNote }),
         }
       );
-      const data = (await res.json()) as { note?: StaffOrderNote; error?: string };
+      const data = await parseApiJson<{ note?: StaffOrderNote; error?: string }>(res, lang);
       if (!res.ok || !data.note) {
         setStaffNoteError(
           data.error || (lang === 'ar' ? 'تعذر حفظ الملاحظة.' : 'Unable to save note.')
@@ -757,7 +781,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         }
       );
       if (!res.ok) {
-        const data = (await res.json()) as { error?: string };
+        const data = await parseApiJson<{ error?: string }>(res, lang);
         setStaffNoteError(data.error || 'Unable to delete note.');
         return;
       }
@@ -910,7 +934,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         },
         body: JSON.stringify({ nameAr: cleanAr, nameEn: cleanEn }),
       });
-      const data = (await res.json()) as { category?: StoreCategory; error?: string };
+      const data = await parseApiJson<{ category?: StoreCategory; error?: string }>(res, lang);
       if (!res.ok || !data.category) {
         setPortalError(data.error || 'Unable to add category.');
         return;
@@ -947,7 +971,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         },
         body: JSON.stringify({ isActive: !cat.isActive }),
       });
-      const data = (await res.json()) as { category?: StoreCategory; error?: string };
+      const data = await parseApiJson<{ category?: StoreCategory; error?: string }>(res, lang);
       if (!res.ok || !data.category) {
         setPortalError(data.error || 'Unable to update category.');
         return;
@@ -975,7 +999,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
-      const data = (await res.json()) as { deleted?: boolean; error?: string };
+      const data = await parseApiJson<{ deleted?: boolean; error?: string }>(res, lang);
       if (!res.ok) {
         setPortalError(data.error || 'Unable to delete category.');
         return;
@@ -1027,7 +1051,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         },
         body: JSON.stringify({ dataUrl }),
       });
-      const data = (await res.json()) as { imageUrl?: string; error?: string };
+      const data = await parseApiJson<{ imageUrl?: string; error?: string }>(res, lang);
       if (!res.ok || !data.imageUrl) {
         setProductModalError(data.error || 'Failed to upload image.');
         return;
@@ -1100,7 +1124,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
             subtitleEn: prodSubtitleEn.trim() || prodTitleEn.trim(),
           }),
         });
-        const data = (await res.json()) as { product?: Product; error?: string };
+        const data = await parseApiJson<{ product?: Product; error?: string }>(res, lang);
         if (!res.ok || !data.product) {
           setProductModalError(data.error || 'Failed to create product.');
           return;
@@ -1128,7 +1152,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
             isActive: prodActive,
           }),
         });
-        const data = (await res.json()) as { product?: Product; error?: string };
+        const data = await parseApiJson<{ product?: Product; error?: string }>(res, lang);
         if (!res.ok || !data.product) {
           setProductModalError(data.error || 'Failed to update product.');
           return;
@@ -1164,7 +1188,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         },
         body: JSON.stringify(patch),
       });
-      const data = (await res.json()) as { product?: Product; error?: string };
+      const data = await parseApiJson<{ product?: Product; error?: string }>(res, lang);
       if (!res.ok || !data.product) {
         setPortalError(data.error || 'Unable to update product.');
         return;
@@ -1283,15 +1307,27 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
           </p>
         </div>
       ) : !staffProfile ? (
-        /* State 3: Signed in via Google, but not authorized as active staff */
+        /* State 3: Connection/Server Error vs Unauthorized Account */
         <div className="mx-auto max-w-lg rounded-2xl border border-black/[0.08] dark:border-white/[0.1] bg-white dark:bg-[#13161C] p-8 sm:p-10 text-center space-y-5">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-amber-500/10 text-amber-700 dark:text-amber-400">
+          <div
+            className={`mx-auto flex h-12 w-12 items-center justify-center rounded-xl ${
+              portalError
+                ? 'bg-red-500/10 text-red-600 dark:text-red-400'
+                : 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
+            }`}
+          >
             <ShieldCheck className="h-6 w-6" aria-hidden="true" />
           </div>
 
           <div className="space-y-2">
             <h2 className="font-editorial text-xl font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
-              {lang === 'ar' ? 'الحساب ده معلهوش صلاحيات موظف' : 'No Active Staff Permissions'}
+              {portalError
+                ? lang === 'ar'
+                  ? 'تعذر التحقق من صلاحيات الموظف مؤقتاً'
+                  : 'Unable to Verify Staff Access Right Now'
+                : lang === 'ar'
+                ? 'الحساب ده معلهوش صلاحيات موظف'
+                : 'No Active Staff Permissions'}
             </h2>
             <p className="text-sm text-[#525866] dark:text-[#9CA3AF]">
               {lang === 'ar'
@@ -1302,7 +1338,11 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
               </strong>
             </p>
             <p className="text-xs leading-relaxed text-[#525866] dark:text-[#9CA3AF]">
-              {lang === 'ar'
+              {portalError
+                ? lang === 'ar'
+                  ? 'الحساب مسجل دخول حالياً، لكن تعذر استلام رد سليم من الخادم (قد يكون الخادم أُعيد تشغيله للتو أو تحتاج الصفحة لإعادة تحميل).'
+                  : 'Your Google account is signed in, but the staff server did not return a valid response. Try refreshing the page or retrying.'
+                : lang === 'ar'
                 ? 'اطلب من مدير النظام يضيف إيميل جوجل ده من تبويب إدارة الموظفين ويفعّل لك الصلاحيات المناسبة.'
                 : 'Ask an administrator to authorize this Google email in the Staff Permissions panel.'}
             </p>
@@ -1318,15 +1358,25 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
             <button
               type="button"
               onClick={() => void logout()}
-              className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-black/[0.12] dark:border-white/[0.14] px-4 text-xs font-semibold text-[#0F1115] dark:text-[#F4F5F7] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] cursor-pointer"
+              className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-black/[0.12] dark:border-white/[0.14] px-4 text-xs font-semibold text-[#0F1115] dark:text-[#F4F5F7] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] cursor-pointer whitespace-nowrap"
             >
               <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
               <span>{lang === 'ar' ? 'تسجيل الخروج' : 'Sign Out'}</span>
             </button>
+            {portalError && (
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-[#1D4ED8]/30 bg-[#1D4ED8]/10 px-4 text-xs font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:bg-[#1D4ED8]/15 cursor-pointer whitespace-nowrap"
+              >
+                <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>{lang === 'ar' ? 'تحديث الصفحة' : 'Refresh Page'}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void loadStaffProfile()}
-              className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg bg-[#1D4ED8] px-4 text-xs font-semibold text-white hover:bg-[#1E40AF] cursor-pointer"
+              className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg bg-[#1D4ED8] px-4 text-xs font-semibold text-white hover:bg-[#1E40AF] cursor-pointer whitespace-nowrap"
             >
               <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
               <span>{lang === 'ar' ? 'إعادة التحقق' : 'Re-check Access'}</span>
