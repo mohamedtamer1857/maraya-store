@@ -14,7 +14,11 @@ export function isValidProductCategory(raw: unknown): raw is string {
 export function isValidImageUrl(raw: unknown): raw is string {
   if (typeof raw !== 'string') return false;
   const trimmed = raw.trim();
-  if (!trimmed || trimmed.length > 1000) return false;
+  if (!trimmed) return false;
+  if (/^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(trimmed)) {
+    return trimmed.length <= 2_500_000;
+  }
+  if (trimmed.length > 1000) return false;
   if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
     return true;
   }

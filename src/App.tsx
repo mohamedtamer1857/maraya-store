@@ -48,15 +48,19 @@ export default function App() {
   const [toastText, setToastText] = useState<string | null>(null);
 
   const [isOrdersOpen, setIsOrdersOpen] = useState(false);
-  const [activeView, setActiveView] = useState<'store' | 'staff'>(() => {
+  const isStaffLocation = () => {
     try {
-      return window.location.hash === '#/staff' || window.location.hash === '#staff'
-        ? 'staff'
-        : 'store';
+      const p = window.location.pathname.replace(/\/+$/, '');
+      const h = window.location.hash;
+      return p === '/staff' || h === '#/staff' || h === '#staff';
     } catch {
-      return 'store';
+      return false;
     }
-  });
+  };
+
+  const [activeView, setActiveView] = useState<'store' | 'staff'>(() =>
+    isStaffLocation() ? 'staff' : 'store'
+  );
   const [products, setProducts] = useState<Product[]>(PRODUCTS);
   const [storeCategories, setStoreCategories] = useState<StoreCategory[]>(DEFAULT_STORE_CATEGORIES);
   const [mapsApiKey, setMapsApiKey] = useState<string>(
@@ -114,25 +118,38 @@ export default function App() {
   }, [refreshProducts]);
 
   useEffect(() => {
-    const onHashChange = () => {
-      const h = window.location.hash;
-      setActiveView(h === '#/staff' || h === '#staff' ? 'staff' : 'store');
+    const syncRoute = () => {
+      setActiveView(isStaffLocation() ? 'staff' : 'store');
     };
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
+    window.addEventListener('hashchange', syncRoute);
+    window.addEventListener('popstate', syncRoute);
+    return () => {
+      window.removeEventListener('hashchange', syncRoute);
+      window.removeEventListener('popstate', syncRoute);
+    };
   }, []);
 
   const openStaffPortal = () => {
     setActiveView('staff');
-    if (window.location.hash !== '#/staff') {
-      window.location.hash = '#/staff';
+    if (window.location.pathname.replace(/\/+$/, '') !== '/staff') {
+      try {
+        window.history.pushState(null, '', '/staff');
+      } catch {
+        window.location.hash = '#/staff';
+      }
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const openStorefront = () => {
     setActiveView('store');
-    if (window.location.hash === '#/staff' || window.location.hash === '#staff') {
+    if (window.location.pathname.replace(/\/+$/, '') === '/staff') {
+      try {
+        window.history.pushState(null, '', '/');
+      } catch {
+        window.location.hash = '#top';
+      }
+    } else if (window.location.hash === '#/staff' || window.location.hash === '#staff') {
       window.location.hash = '#top';
     }
   };
