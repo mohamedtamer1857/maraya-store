@@ -17,6 +17,16 @@ function getConnectionString(): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+export class DatabaseNotConfiguredError extends Error {
+  readonly code = 'DATABASE_NOT_CONFIGURED';
+  constructor() {
+    super(
+      'Database connection is not configured on the server. Set DATABASE_URL (or SQL_HOST, SQL_USER, SQL_PASSWORD, SQL_DB_NAME) in Vercel Environment Variables and redeploy.'
+    );
+    this.name = 'DatabaseNotConfiguredError';
+  }
+}
+
 export function isDatabaseConfigured(): boolean {
   if (getConnectionString()) return true;
   return Boolean(process.env.SQL_HOST && process.env.SQL_USER && process.env.SQL_DB_NAME);
@@ -32,9 +42,7 @@ function shouldUseSslForUrl(connectionString: string): boolean {
 export const createPool = () => {
   if (!global._postgresPool) {
     if (!isDatabaseConfigured()) {
-      throw new Error(
-        'Database connection is not configured on the server. Set DATABASE_URL (or SQL_HOST, SQL_USER, SQL_PASSWORD, SQL_DB_NAME) in Environment Variables.'
-      );
+      throw new DatabaseNotConfiguredError();
     }
 
     const connectionString = getConnectionString();
@@ -66,9 +74,7 @@ export const createPool = () => {
         connectionTimeoutMillis: 15000,
       });
     } else {
-      throw new Error(
-        'Database connection is not configured on the server. Set DATABASE_URL in Environment Variables.'
-      );
+      throw new DatabaseNotConfiguredError();
     }
 
     global._postgresPool.on('error', (err) => {
@@ -99,9 +105,7 @@ export const db: DrizzleDb = new Proxy({} as DrizzleDb, {
 
 export async function ensureDatabaseSchema(): Promise<void> {
   if (!isDatabaseConfigured()) {
-    throw new Error(
-      'Database connection is not configured on the server. Set DATABASE_URL (or SQL_HOST, SQL_USER, SQL_PASSWORD, SQL_DB_NAME) in Vercel Environment Variables.'
-    );
+    throw new DatabaseNotConfiguredError();
   }
 
   if (!global._marayaSchemaReadyPromise) {

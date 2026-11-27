@@ -245,6 +245,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
   const [verifiedEmail, setVerifiedEmail] = useState<string | null>(null);
   const [portalError, setPortalError] = useState<string | null>(null);
   const [needsNewTab, setNeedsNewTab] = useState(false);
+  const [dbNotConfigured, setDbNotConfigured] = useState(false);
   const [activeTab, setActiveTab] = useState<'orders' | 'products' | 'team'>('orders');
 
   // Orders & Sales state
@@ -317,6 +318,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     setStaffLoading(true);
     setPortalError(null);
     setNeedsNewTab(false);
+    setDbNotConfigured(false);
     try {
       let forceRefresh = false;
       let lastError: unknown = null;
@@ -343,9 +345,11 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
             continue;
           }
 
-          if (res.status >= 502 && res.status <= 504 && attempt < 2) {
-            await new Promise((r) => setTimeout(r, 650 * (attempt + 1)));
-            continue;
+          if (res.status === 502 || res.status === 504) {
+            if (attempt < 2) {
+              await new Promise((r) => setTimeout(r, 650 * (attempt + 1)));
+              continue;
+            }
           }
 
           const data = await parseApiJson<{
@@ -353,9 +357,19 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
             staff?: StaffProfile | null;
             email?: string | null;
             error?: string;
+            code?: string;
           }>(res, lang);
 
           if (!res.ok) {
+            if (res.status === 503 || data.code === 'DATABASE_NOT_CONFIGURED') {
+              setDbNotConfigured(true);
+              setPortalError(
+                data.error ||
+                  'Database connection is not configured on the server. Set DATABASE_URL in Vercel Environment Variables.'
+              );
+              setStaffProfile(null);
+              return;
+            }
             if (res.status >= 500 && attempt < 2) {
               await new Promise((r) => setTimeout(r, 650 * (attempt + 1)));
               continue;
@@ -1400,7 +1414,11 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
 
           <div className="space-y-2">
             <h2 className="font-editorial text-xl font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
-              {portalError
+              {dbNotConfigured
+                ? lang === 'ar'
+                  ? 'قاعدة البيانات غير مربوطة على الاستضافة'
+                  : 'Database Not Configured on Server'
+                : portalError
                 ? lang === 'ar'
                   ? 'تعذر التحقق من صلاحيات الموظف مؤقتاً'
                   : 'Unable to Verify Staff Access Right Now'
@@ -1417,7 +1435,11 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
               </strong>
             </p>
             <p className="text-xs leading-relaxed text-[#525866] dark:text-[#9CA3AF]">
-              {portalError
+              {dbNotConfigured
+                ? lang === 'ar'
+                  ? 'خادم الموقع على Vercel يعمل، لكن لم يتم ربط قاعدة بيانات PostgreSQL بعد. أضف متغير DATABASE_URL في Vercel Environment Variables ثم أعد النشر (Redeploy).'
+                  : 'The Vercel API server is running, but no PostgreSQL database is connected yet. Add DATABASE_URL in Vercel Environment Variables and redeploy.'
+                : portalError
                 ? lang === 'ar'
                   ? 'الحساب مسجل دخول حالياً، لكن تعذر استلام رد سليم من الخادم (قد يكون الخادم أُعيد تشغيله للتو أو تحتاج الصفحة لإعادة تحميل).'
                   : 'Your Google account is signed in, but the staff server did not return a valid response. Try refreshing the page or retrying.'

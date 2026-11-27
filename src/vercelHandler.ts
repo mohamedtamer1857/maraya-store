@@ -43,20 +43,46 @@ function sendJsonError(res: ServerResponse, statusCode: number, message: string)
   res.end(JSON.stringify({ error: message }));
 }
 
-export default function handler(req: IncomingMessage, res: ServerResponse) {
+export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  normalizeVercelApiUrl(req);
+
+  let app: ReturnType<typeof createApiApp>;
   try {
-    normalizeVercelApiUrl(req);
-    const app = getApiApp();
-    return app(req as unknown as Request, res as unknown as Response, (err: unknown) => {
-      const message =
-        err instanceof Error ? err.message : 'Unexpected API routing error.';
-      console.error('Unhandled Express pipeline error:', err);
-      sendJsonError(res, 500, message);
-    });
+    app = getApiApp();
   } catch (err: unknown) {
     const message =
       err instanceof Error ? err.message : 'Serverless API handler failed to initialize.';
-    console.error('Vercel API handler error:', err);
+    console.error('Vercel API initialization error:', err);
     sendJsonError(res, 500, message);
+    return;
   }
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    };
+
+    res.once('finish', done);
+    res.once('close', done);
+
+    try {
+      app(req as unknown as Request, res as unknown as Response, (err: unknown) => {
+        const message =
+          err instanceof Error ? err.message : 'Unexpected API routing error.';
+        console.error('Unhandled Express pipeline error:', err);
+        sendJsonError(res, 500, message);
+        done();
+      });
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : 'Serverless API request execution failed.';
+      console.error('Vercel API runtime error:', err);
+      sendJsonError(res, 500, message);
+      done();
+    }
+  });
 }

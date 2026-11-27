@@ -5,7 +5,11 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { optionalAuth, requireAuth } from './middleware/auth.ts';
 import type { AuthRequest } from './middleware/auth.ts';
-import { ensureDatabaseSchema } from './db/index.ts';
+import {
+  DatabaseNotConfiguredError,
+  ensureDatabaseSchema,
+  isDatabaseConfigured,
+} from './db/index.ts';
 import { getOrCreateUser } from './db/users.ts';
 import {
   addOrderStaffNote,
@@ -91,10 +95,39 @@ async function resolveVerifiedStaff(
 
 export function createApiApp() {
   const app = express();
+  app.use((req: Request, _res: Response, next: NextFunction) => {
+    const rawReq = req as Request & { _body?: boolean; body?: unknown };
+    if (rawReq.body !== undefined && !rawReq._body) {
+      if (Buffer.isBuffer(rawReq.body)) {
+        try {
+          const text = rawReq.body.toString('utf8').trim();
+          rawReq.body = text ? JSON.parse(text) : {};
+          rawReq._body = true;
+        } catch {
+          // Let express.json handle malformed payloads
+        }
+      } else if (typeof rawReq.body === 'string') {
+        try {
+          const text = rawReq.body.trim();
+          rawReq.body = text ? JSON.parse(text) : {};
+          rawReq._body = true;
+        } catch {
+          // Let express.json handle malformed payloads
+        }
+      } else if (typeof rawReq.body === 'object') {
+        rawReq._body = true;
+      }
+    }
+    next();
+  });
   app.use(express.json({ limit: '15mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      databaseConfigured: isDatabaseConfigured(),
+      runtime: process.env.VERCEL ? 'vercel' : 'node',
+    });
   });
 
   app.get('/api/maps/key', (_req: Request, res: Response) => {
@@ -224,6 +257,10 @@ export function createApiApp() {
       ]);
       res.json({ products, categories });
     } catch (error: unknown) {
+      if (error instanceof DatabaseNotConfiguredError) {
+        res.status(503).json({ error: error.message, code: error.code });
+        return;
+      }
       const message = error instanceof Error ? error.message : 'Unable to load catalog.';
       res.status(500).json({ error: message });
     }
@@ -382,6 +419,10 @@ export function createApiApp() {
 
       res.json({ isStaff: true, staff, email, emailVerified });
     } catch (error: unknown) {
+      if (error instanceof DatabaseNotConfiguredError) {
+        res.status(503).json({ error: error.message, code: error.code });
+        return;
+      }
       const message = error instanceof Error ? error.message : 'Unable to verify staff profile.';
       res.status(500).json({ error: message });
     }
