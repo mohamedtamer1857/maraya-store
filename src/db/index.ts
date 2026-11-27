@@ -31,6 +31,12 @@ function shouldUseSslForUrl(connectionString: string): boolean {
 
 export const createPool = () => {
   if (!global._postgresPool) {
+    if (!isDatabaseConfigured()) {
+      throw new Error(
+        'Database connection is not configured on the server. Set DATABASE_URL (or SQL_HOST, SQL_USER, SQL_PASSWORD, SQL_DB_NAME) in Environment Variables.'
+      );
+    }
+
     const connectionString = getConnectionString();
     const maxClients = process.env.VERCEL ? 5 : 10;
 
@@ -60,11 +66,9 @@ export const createPool = () => {
         connectionTimeoutMillis: 15000,
       });
     } else {
-      global._postgresPool = new Pool({
-        host: '127.0.0.1',
-        max: 1,
-        connectionTimeoutMillis: 2000,
-      });
+      throw new Error(
+        'Database connection is not configured on the server. Set DATABASE_URL in Environment Variables.'
+      );
     }
 
     global._postgresPool.on('error', (err) => {
@@ -74,8 +78,24 @@ export const createPool = () => {
   return global._postgresPool;
 };
 
-const pool = createPool();
-export const db = drizzle(pool, { schema });
+type DrizzleDb = ReturnType<typeof drizzle<typeof schema>>;
+
+let _drizzleDb: DrizzleDb | undefined;
+
+export function getDb(): DrizzleDb {
+  if (!_drizzleDb) {
+    _drizzleDb = drizzle(createPool(), { schema });
+  }
+  return _drizzleDb;
+}
+
+export const db: DrizzleDb = new Proxy({} as DrizzleDb, {
+  get(_target, prop) {
+    const instance = getDb();
+    const value = Reflect.get(instance, prop, instance);
+    return typeof value === 'function' ? value.bind(instance) : value;
+  },
+});
 
 export async function ensureDatabaseSchema(): Promise<void> {
   if (!isDatabaseConfigured()) {
@@ -86,6 +106,7 @@ export async function ensureDatabaseSchema(): Promise<void> {
 
   if (!global._marayaSchemaReadyPromise) {
     global._marayaSchemaReadyPromise = (async () => {
+      const pool = createPool();
       const checkRes = await pool.query<{
         staff_tbl: string | null;
         prod_tbl: string | null;

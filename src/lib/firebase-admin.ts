@@ -3,9 +3,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cert, getApp, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
+import type { Auth } from 'firebase-admin/auth';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const PUBLIC_FALLBACK_PROJECT_ID = 'studious-abstraction-w2ts5';
 
 function resolveProjectId(): string {
   const envProjectId = (
@@ -20,6 +23,7 @@ function resolveProjectId(): string {
   const candidatePaths = [
     path.resolve(process.cwd(), 'firebase-applet-config.json'),
     path.resolve(__dirname, '../../firebase-applet-config.json'),
+    path.resolve(__dirname, '../firebase-applet-config.json'),
   ];
 
   for (const candidate of candidatePaths) {
@@ -36,9 +40,7 @@ function resolveProjectId(): string {
     }
   }
 
-  throw new Error(
-    'Firebase project configuration is missing. Set FIREBASE_PROJECT_ID or include firebase-applet-config.json.'
-  );
+  return PUBLIC_FALLBACK_PROJECT_ID;
 }
 
 function getOrInitAdminApp() {
@@ -66,4 +68,6 @@ function getOrInitAdminApp() {
   });
 }
 
-export const adminAuth = getAuth(getOrInitAdminApp());
+export function getAdminAuth(): Auth {
+  return getAuth(getOrInitAdminApp());
+}

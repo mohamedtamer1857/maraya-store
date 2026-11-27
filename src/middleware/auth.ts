@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import type { DecodedIdToken } from 'firebase-admin/auth';
-import { adminAuth } from '../lib/firebase-admin.ts';
+import { getAdminAuth } from '../lib/firebase-admin.ts';
 
 export interface AuthRequest extends Request {
   user?: DecodedIdToken;
@@ -19,7 +19,7 @@ export const requireAuth = async (
 
   const token = authHeader.split('Bearer ')[1];
   try {
-    const decodedToken = await adminAuth.verifyIdToken(token);
+    const decodedToken = await getAdminAuth().verifyIdToken(token);
     req.user = decodedToken;
     next();
   } catch (error) {
@@ -41,7 +41,7 @@ export const optionalAuth = async (
 
   const token = authHeader.split('Bearer ')[1];
   try {
-    const decodedToken = await adminAuth.verifyIdToken(token);
+    const decodedToken = await getAdminAuth().verifyIdToken(token);
     req.user = decodedToken;
   } catch {
     // Allow unauthenticated guest flow when optional token is absent/expired

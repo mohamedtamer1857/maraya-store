@@ -25,5 +25,5 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "exclude": ["dist", "drizzle"]
+  "exclude": ["dist", "drizzle", "api/index.mjs"]
 }
