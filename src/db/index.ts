@@ -86,6 +86,28 @@ export async function ensureDatabaseSchema(): Promise<void> {
 
   if (!global._marayaSchemaReadyPromise) {
     global._marayaSchemaReadyPromise = (async () => {
+      const checkRes = await pool.query<{
+        staff_tbl: string | null;
+        prod_tbl: string | null;
+        cat_tbl: string | null;
+        orders_tbl: string | null;
+      }>(`
+        SELECT
+          to_regclass('public.staff_members') AS staff_tbl,
+          to_regclass('public.products_catalog') AS prod_tbl,
+          to_regclass('public.product_categories') AS cat_tbl,
+          to_regclass('public.orders') AS orders_tbl
+      `);
+      const existing = checkRes.rows[0];
+      if (
+        existing?.staff_tbl &&
+        existing?.prod_tbl &&
+        existing?.cat_tbl &&
+        existing?.orders_tbl
+      ) {
+        return;
+      }
+
       await pool.query(`
         CREATE TABLE IF NOT EXISTS users (
           id SERIAL PRIMARY KEY,
