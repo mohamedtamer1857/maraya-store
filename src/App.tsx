@@ -592,7 +592,7 @@ export default function App() {
               onClick={openStaffPortal}
               className="font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:underline whitespace-nowrap cursor-pointer"
             >
-              {lang === 'ar' ? 'دخول الموظفين (جوجل)' : 'Staff Portal (Google Sign-In)'}
+              {lang === 'ar' ? 'بوابة الموظفين' : 'Staff Portal'}
             </button>
             <span aria-hidden="true">·</span>
             <span>{t.footer.rights}</span>

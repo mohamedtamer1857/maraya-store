@@ -5,7 +5,6 @@ import {
   CheckCircle2,
   Loader2,
   LocateFixed,
-  LogIn,
   MapPin,
   Minus,
   Plus,
@@ -54,7 +53,7 @@ export function CartDrawer({
   onClearCart,
   onOrderPlaced,
 }: CartDrawerProps) {
-  const { user, savedProfile, signInWithGoogle, getFreshToken, saveCheckoutContact } = useAuth();
+  const { savedProfile, saveCheckoutContact, recordOrderToken } = useAuth();
   const [step, setStep] = useState<'bag' | 'checkout' | 'confirmed'>('bag');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
@@ -72,18 +71,19 @@ export function CartDrawer({
   const [locationError, setLocationError] = useState<string | null>(null);
   const autoTriedGpsRef = useRef(false);
 
-  const persistLocationIfSignedIn = useCallback(
-    async (nextAddress: string) => {
-      if (!user || !nextAddress.trim()) return;
-      try {
-        await saveCheckoutContact(phone.trim() || savedProfile?.phone || '', nextAddress.trim(), lang);
-        setLocationSavedToast(true);
-        window.setTimeout(() => setLocationSavedToast(false), 2200);
-      } catch {
-        // Non-blocking background save
-      }
+  const persistLocationLocally = useCallback(
+    (nextAddress: string) => {
+      if (!nextAddress.trim()) return;
+      saveCheckoutContact(
+        fullName.trim() || savedProfile?.fullName || '',
+        phone.trim() || savedProfile?.phone || '',
+        nextAddress.trim(),
+        lang
+      );
+      setLocationSavedToast(true);
+      window.setTimeout(() => setLocationSavedToast(false), 2200);
     },
-    [user, phone, savedProfile?.phone, lang, saveCheckoutContact]
+    [fullName, phone, savedProfile?.fullName, savedProfile?.phone, lang, saveCheckoutContact]
   );
 
   const detectCurrentLocation = useCallback(async () => {
@@ -111,16 +111,12 @@ export function CartDrawer({
             data.address || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
           setAddress(resolved);
           setLocationSource('gps');
-          if (user) {
-            void persistLocationIfSignedIn(resolved);
-          }
+          persistLocationLocally(resolved);
         } catch {
           const fallback = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
           setAddress(fallback);
           setLocationSource('gps');
-          if (user) {
-            void persistLocationIfSignedIn(fallback);
-          }
+          persistLocationLocally(fallback);
         } finally {
           setIsDetectingLocation(false);
         }
@@ -131,22 +127,22 @@ export function CartDrawer({
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
     );
-  }, [lang, t.cart.locationDeniedHint, user, persistLocationIfSignedIn]);
+  }, [lang, t.cart.locationDeniedHint, persistLocationLocally]);
 
   useEffect(() => {
-    if (user && !fullName && (savedProfile?.displayName || user.displayName)) {
-      setFullName(savedProfile?.displayName || user.displayName || '');
+    if (savedProfile?.fullName && !fullName) {
+      setFullName(savedProfile.fullName);
     }
     if (savedProfile?.phone && !phone) {
       setPhone(savedProfile.phone);
     }
-  }, [user, savedProfile, fullName, phone]);
+  }, [savedProfile, fullName, phone]);
 
-  // Restore saved customer address if signed in; otherwise auto-detect GPS location
+  // Restore saved customer address if present; otherwise auto-detect GPS location
   useEffect(() => {
     if (!isOpen || step !== 'checkout') return;
 
-    if (user && savedProfile?.savedAddress && (locationSource === 'none' || locationSource === 'saved')) {
+    if (savedProfile?.savedAddress && (locationSource === 'none' || locationSource === 'saved')) {
       if (address !== savedProfile.savedAddress) {
         setAddress(savedProfile.savedAddress);
       }
@@ -161,7 +157,7 @@ export function CartDrawer({
 
     autoTriedGpsRef.current = true;
     void detectCurrentLocation();
-  }, [isOpen, step, user, savedProfile?.savedAddress, locationSource, address, detectCurrentLocation]);
+  }, [isOpen, step, savedProfile?.savedAddress, locationSource, address, detectCurrentLocation]);
 
   if (!isOpen) return null;
 
@@ -192,15 +188,9 @@ export function CartDrawer({
     let confirmedTotalLabel = totalWithShippingLabel;
 
     try {
-      const token = await getFreshToken();
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) {
-        headers.Authorization = `Bearer ${token}`;
-      }
-
       const res = await fetch('/api/orders', {
         method: 'POST',
-        headers,
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fullName: cleanName,
           phone: cleanPhone,
@@ -230,15 +220,20 @@ export function CartDrawer({
         return;
       }
 
-      const data = (await res.json()) as { orderRef?: string; totalAmount?: number };
+      const data = (await res.json()) as {
+        orderRef?: string;
+        orderToken?: string;
+        totalAmount?: number;
+      };
       if (data.orderRef) orderRef = data.orderRef;
+      if (data.orderToken) {
+        recordOrderToken(orderRef, data.orderToken);
+      }
       if (typeof data.totalAmount === 'number') {
         confirmedTotalLabel = `${data.totalAmount.toLocaleString('en-US')} ${t.catalog.currency}`;
       }
 
-      if (user) {
-        void saveCheckoutContact(cleanPhone, cleanAddress, lang);
-      }
+      saveCheckoutContact(cleanName, cleanPhone, cleanAddress, lang);
       onOrderPlaced?.();
     } catch {
       setCheckoutError(
@@ -462,8 +457,8 @@ export function CartDrawer({
                       <BookmarkCheck className="h-3 w-3" aria-hidden="true" />
                       <span>
                         {lang === 'ar'
-                          ? 'عنوانك المحفوظ في حسابك'
-                          : 'Saved to your account'}
+                          ? 'عنوانك المحفوظ على المتصفح'
+                          : 'Saved on this browser'}
                       </span>
                     </span>
                   ) : locationSource === 'gps' ? (
@@ -526,15 +521,15 @@ export function CartDrawer({
                     </span>
                   </button>
 
-                  {user && address.trim() && address.trim() !== savedProfile?.savedAddress && (
+                  {address.trim() && address.trim() !== savedProfile?.savedAddress && (
                     <button
                       type="button"
-                      onClick={() => void persistLocationIfSignedIn(address)}
+                      onClick={() => persistLocationLocally(address)}
                       className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-black/[0.12] dark:border-white/[0.14] px-2.5 text-[11px] font-semibold text-[#0F1115] dark:text-[#F4F5F7] hover:border-emerald-600 hover:text-emerald-700 dark:hover:text-emerald-400 transition-colors cursor-pointer"
                     >
                       <BookmarkCheck className="h-3 w-3 shrink-0" aria-hidden="true" />
                       <span>
-                        {lang === 'ar' ? 'حفظ في حسابي' : 'Save to Account'}
+                        {lang === 'ar' ? 'حفظ بيانات التوصيل' : 'Save Delivery Details'}
                       </span>
                     </button>
                   )}
@@ -543,24 +538,9 @@ export function CartDrawer({
                 {locationSavedToast && (
                   <p className="mt-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
                     {lang === 'ar'
-                      ? 'تم حفظ العنوان في حسابك وهيفضل محفوظ معاك في الأوردرات الجاية.'
-                      : 'Location saved to your account for future orders.'}
+                      ? 'تم حفظ بيانات وعنوان التوصيل على متصفحك للأوردرات الجاية.'
+                      : 'Delivery details saved on this browser for future orders.'}
                   </p>
-                )}
-
-                {!user && (
-                  <button
-                    type="button"
-                    onClick={() => void signInWithGoogle()}
-                    className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-medium text-[#1D4ED8] dark:text-[#60A5FA] hover:underline cursor-pointer"
-                  >
-                    <LogIn className="h-3 w-3 shrink-0" aria-hidden="true" />
-                    <span>
-                      {lang === 'ar'
-                        ? 'سجل دخول بجوجل عشان اللوكيشن يفضل محفوظ مع حسابك دايماً'
-                        : 'Sign in with Google to keep this location saved to your profile'}
-                    </span>
-                  </button>
                 )}
 
                 {locationError && (
@@ -579,9 +559,7 @@ export function CartDrawer({
                         setAddress(pickedAddr);
                         setLocationSource('map');
                         setLocationError(null);
-                        if (user) {
-                          void persistLocationIfSignedIn(pickedAddr);
-                        }
+                        persistLocationLocally(pickedAddr);
                       }}
                     />
                   </div>

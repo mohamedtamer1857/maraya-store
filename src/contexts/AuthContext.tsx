@@ -1,268 +1,302 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
-import type { User } from 'firebase/auth';
-import {
-  collection,
-  deleteDoc,
-  doc,
-  onSnapshot,
-  query,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  where,
-} from 'firebase/firestore';
-import {
-  auth,
-  db,
-  googleAuthProvider,
-  handleFirestoreError,
-  OperationType,
-} from '../lib/firebase';
 import type { Language, Product } from '../types';
 
+export type StaffRole = 'admin' | 'manager' | 'operations' | 'viewer';
+
+export interface StaffProfile {
+  id: number;
+  username: string;
+  displayName: string | null;
+  role: StaffRole;
+  canViewOrders: boolean;
+  canUpdateOrderStatus: boolean;
+  canViewSales: boolean;
+  canManageStaff: boolean;
+  canManageProducts: boolean;
+  isActive: boolean;
+  isPrimaryAdmin: boolean;
+  hasPassword?: boolean;
+}
+
 export interface SavedProfile {
-  displayName: string;
-  email: string;
+  fullName: string;
   phone: string;
   savedAddress: string;
   preferredLang: Language;
 }
 
+export interface SavedOrderToken {
+  orderRef: string;
+  token: string;
+}
+
 interface AuthContextValue {
-  user: User | null;
   authReady: boolean;
-  idToken: string | null;
+  staffToken: string | null;
+  staffUser: StaffProfile | null;
+  needsInitialSetup: boolean;
+  defaultAdminUsername: string;
+  authError: string | null;
   wishlistIds: string[];
   savedProfile: SavedProfile | null;
-  authError: string | null;
-  signInWithGoogle: () => Promise<void>;
-  logout: () => Promise<void>;
-  getFreshToken: (forceRefresh?: boolean) => Promise<string | null>;
+  savedOrderTokens: SavedOrderToken[];
+  refreshAuthStatus: () => Promise<void>;
+  loginStaff: (username: string, password: string) => Promise<boolean>;
+  setupInitialAdmin: (username: string, password: string, displayName?: string) => Promise<boolean>;
+  logoutStaff: () => void;
+  getStaffToken: () => string | null;
+  setStaffUser: (profile: StaffProfile | null) => void;
   toggleWishlist: (product: Product) => Promise<void>;
-  saveCheckoutContact: (phone: string, savedAddress: string, preferredLang: Language) => Promise<void>;
+  saveCheckoutContact: (
+    fullName: string,
+    phone: string,
+    savedAddress: string,
+    preferredLang: Language
+  ) => void;
+  recordOrderToken: (orderRef: string, token: string) => void;
+}
+
+const WISHLIST_STORAGE_KEY = 'maraya-wishlist';
+const PROFILE_STORAGE_KEY = 'maraya-customer-profile';
+const ORDER_TOKENS_STORAGE_KEY = 'maraya-order-tokens';
+
+function readJsonStorage<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonStorage(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Ignore browser storage quota or private-mode errors
+  }
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [idToken, setIdToken] = useState<string | null>(null);
-  const [wishlistIds, setWishlistIds] = useState<string[]>([]);
-  const [savedProfile, setSavedProfile] = useState<SavedProfile | null>(null);
+  const [staffToken, setStaffTokenState] = useState<string | null>(null);
+  const staffTokenRef = useRef<string | null>(null);
+  const [staffUser, setStaffUser] = useState<StaffProfile | null>(null);
+  const [needsInitialSetup, setNeedsInitialSetup] = useState(false);
+  const [defaultAdminUsername, setDefaultAdminUsername] = useState('admin');
   const [authError, setAuthError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setUser(firebaseUser);
-      setAuthReady(true);
+  const [wishlistIds, setWishlistIds] = useState<string[]>(() => {
+    const parsed = readJsonStorage<unknown>(WISHLIST_STORAGE_KEY, []);
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === 'string')
+      : [];
+  });
 
-      if (firebaseUser) {
-        try {
-          const token = await firebaseUser.getIdToken();
-          setIdToken(token);
-          await fetch('/api/me/sync', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          });
-        } catch {
-          // Non-fatal sync retry on next action
-        }
-      } else {
-        setIdToken(null);
-        setWishlistIds([]);
-        setSavedProfile(null);
-      }
-    });
+  const [savedProfile, setSavedProfile] = useState<SavedProfile | null>(() => {
+    const parsed = readJsonStorage<Partial<SavedProfile> | null>(PROFILE_STORAGE_KEY, null);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      fullName: typeof parsed.fullName === 'string' ? parsed.fullName : '',
+      phone: typeof parsed.phone === 'string' ? parsed.phone : '',
+      savedAddress: typeof parsed.savedAddress === 'string' ? parsed.savedAddress : '',
+      preferredLang: parsed.preferredLang === 'en' ? 'en' : 'ar',
+    };
+  });
 
-    return () => unsubscribe();
+  const [savedOrderTokens, setSavedOrderTokens] = useState<SavedOrderToken[]>(() => {
+    const parsed = readJsonStorage<unknown>(ORDER_TOKENS_STORAGE_KEY, []);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (entry): entry is SavedOrderToken =>
+          Boolean(entry) &&
+          typeof entry === 'object' &&
+          typeof (entry as SavedOrderToken).orderRef === 'string' &&
+          typeof (entry as SavedOrderToken).token === 'string'
+      )
+      .slice(0, 30);
+  });
+
+  const setStaffToken = useCallback((token: string | null) => {
+    staffTokenRef.current = token;
+    setStaffTokenState(token);
   }, []);
 
-  useEffect(() => {
-    if (!authReady || !user) return;
+  const getStaffToken = useCallback(() => {
+    return staffTokenRef.current;
+  }, []);
 
-    const wishlistPath = `users/${user.uid}/wishlist`;
-    const wishlistQuery = query(
-      collection(db, wishlistPath),
-      where('uid', '==', user.uid)
-    );
-
-    const unsubWishlist = onSnapshot(
-      wishlistQuery,
-      (snapshot) => {
-        setWishlistIds(snapshot.docs.map((d) => d.id));
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, wishlistPath);
-      }
-    );
-
-    const profilePath = `users/${user.uid}/private/info`;
-    const unsubProfile = onSnapshot(
-      doc(db, profilePath),
-      (snap) => {
-        if (snap.exists()) {
-          const data = snap.data() as Partial<SavedProfile>;
-          setSavedProfile({
-            displayName: typeof data.displayName === 'string' ? data.displayName : user.displayName || 'MARAYA Guest',
-            email: typeof data.email === 'string' ? data.email : user.email || '',
-            phone: typeof data.phone === 'string' ? data.phone : '',
-            savedAddress: typeof data.savedAddress === 'string' ? data.savedAddress : '',
-            preferredLang: data.preferredLang === 'en' ? 'en' : 'ar',
-          });
-        }
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.GET, profilePath);
-      }
-    );
-
-    return () => {
-      unsubWishlist();
-      unsubProfile();
-    };
-  }, [authReady, user]);
-
-  const signInWithGoogle = useCallback(async () => {
-    setAuthError(null);
+  const refreshAuthStatus = useCallback(async () => {
     try {
-      const cred = await signInWithPopup(auth, googleAuthProvider);
-      const token = await cred.user.getIdToken();
-      setIdToken(token);
-
-      try {
-        await fetch('/api/me/sync', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-        });
-      } catch {
-        // Non-fatal sync retry on next API call
+      const res = await fetch('/api/staff/auth-status', { cache: 'no-store' });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          needsInitialSetup?: boolean;
+          defaultUsername?: string;
+        };
+        setNeedsInitialSetup(Boolean(data.needsInitialSetup));
+        if (typeof data.defaultUsername === 'string' && data.defaultUsername.trim()) {
+          setDefaultAdminUsername(data.defaultUsername.trim());
+        }
       }
-
-      const infoPath = `users/${cred.user.uid}/private/info`;
-      const displayName = (cred.user.displayName || 'MARAYA Guest').slice(0, 120);
-      const email = (cred.user.email || `${cred.user.uid}@maraya.local`).slice(0, 160);
-      try {
-        await updateDoc(doc(db, infoPath), {
-          displayName,
-          email,
-          updatedAt: serverTimestamp(),
-        });
-      } catch {
-        await setDoc(doc(db, infoPath), {
-          uid: cred.user.uid,
-          displayName,
-          email,
-          phone: '',
-          savedAddress: '',
-          preferredLang: 'ar',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : 'Google Sign-In failed.';
-      setAuthError(msg);
+    } catch {
+      // Non-fatal; user can still retry from staff login page
+    } finally {
+      setAuthReady(true);
     }
   }, []);
 
-  const logout = useCallback(async () => {
-    await signOut(auth);
-    setIdToken(null);
-    setWishlistIds([]);
-    setSavedProfile(null);
-  }, []);
+  useEffect(() => {
+    void refreshAuthStatus();
+  }, [refreshAuthStatus]);
 
-  const getFreshToken = useCallback(async (forceRefresh = false) => {
-    if (!auth.currentUser) return null;
-    const token = await auth.currentUser.getIdToken(forceRefresh);
-    setIdToken(token);
-    return token;
-  }, []);
-
-  const toggleWishlist = useCallback(
-    async (product: Product) => {
-      if (!user) {
-        await signInWithGoogle();
-        return;
-      }
-      const docPath = `users/${user.uid}/wishlist/${product.id}`;
-      const isSaved = wishlistIds.includes(product.id);
+  const loginStaff = useCallback(
+    async (username: string, password: string): Promise<boolean> => {
+      setAuthError(null);
       try {
-        if (isSaved) {
-          await deleteDoc(doc(db, docPath));
-        } else {
-          await setDoc(doc(db, docPath), {
-            uid: user.uid,
-            productId: product.id.slice(0, 128),
-            titleAr: product.title.ar.slice(0, 140),
-            titleEn: product.title.en.slice(0, 140),
-            createdAt: serverTimestamp(),
-          });
+        const res = await fetch('/api/staff/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: username.trim(), password }),
+        });
+
+        const raw = await res.text();
+        let data: { token?: string; staff?: StaffProfile; error?: string } = {};
+        try {
+          data = raw ? (JSON.parse(raw) as typeof data) : {};
+        } catch {
+          setAuthError(`Unexpected response from staff server (HTTP ${res.status}).`);
+          return false;
         }
-      } catch (error) {
-        handleFirestoreError(error, isSaved ? OperationType.DELETE : OperationType.CREATE, docPath);
+
+        if (!res.ok || !data.token || !data.staff) {
+          setAuthError(data.error || 'Invalid username or password.');
+          return false;
+        }
+
+        setStaffToken(data.token);
+        setStaffUser(data.staff);
+        setNeedsInitialSetup(false);
+        return true;
+      } catch (err) {
+        setAuthError(
+          err instanceof Error ? err.message : 'Unable to reach staff authentication server.'
+        );
+        return false;
       }
     },
-    [user, wishlistIds, signInWithGoogle]
+    [setStaffToken]
   );
+
+  const setupInitialAdmin = useCallback(
+    async (username: string, password: string, displayName?: string): Promise<boolean> => {
+      setAuthError(null);
+      try {
+        const res = await fetch('/api/staff/setup-admin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: username.trim(),
+            password,
+            displayName: displayName?.trim() || undefined,
+          }),
+        });
+
+        const raw = await res.text();
+        let data: { token?: string; staff?: StaffProfile; error?: string } = {};
+        try {
+          data = raw ? (JSON.parse(raw) as typeof data) : {};
+        } catch {
+          setAuthError(`Unexpected response from staff server (HTTP ${res.status}).`);
+          return false;
+        }
+
+        if (!res.ok || !data.token || !data.staff) {
+          setAuthError(data.error || 'Unable to configure initial administrator.');
+          void refreshAuthStatus();
+          return false;
+        }
+
+        setStaffToken(data.token);
+        setStaffUser(data.staff);
+        setNeedsInitialSetup(false);
+        return true;
+      } catch (err) {
+        setAuthError(
+          err instanceof Error ? err.message : 'Unable to reach staff authentication server.'
+        );
+        return false;
+      }
+    },
+    [refreshAuthStatus, setStaffToken]
+  );
+
+  const logoutStaff = useCallback(() => {
+    setStaffToken(null);
+    setStaffUser(null);
+    setAuthError(null);
+    void refreshAuthStatus();
+  }, [refreshAuthStatus, setStaffToken]);
+
+  const toggleWishlist = useCallback(async (product: Product) => {
+    setWishlistIds((prev) => {
+      const exists = prev.includes(product.id);
+      const next = exists ? prev.filter((id) => id !== product.id) : [...prev, product.id];
+      writeJsonStorage(WISHLIST_STORAGE_KEY, next);
+      return next;
+    });
+  }, []);
 
   const saveCheckoutContact = useCallback(
-    async (phone: string, savedAddress: string, preferredLang: Language) => {
-      if (!user) return;
-      const infoPath = `users/${user.uid}/private/info`;
-      const cleanPhone = phone.trim().slice(0, 32);
-      const cleanAddress = savedAddress.trim().slice(0, 300);
-      const displayName = (user.displayName || 'MARAYA Guest').slice(0, 120);
-      const email = (user.email || `${user.uid}@maraya.local`).slice(0, 160);
-
-      try {
-        if (savedProfile) {
-          await updateDoc(doc(db, infoPath), {
-            displayName,
-            email,
-            phone: cleanPhone,
-            savedAddress: cleanAddress,
-            preferredLang,
-            updatedAt: serverTimestamp(),
-          });
-        } else {
-          await setDoc(doc(db, infoPath), {
-            uid: user.uid,
-            displayName,
-            email,
-            phone: cleanPhone,
-            savedAddress: cleanAddress,
-            preferredLang,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        }
-      } catch (error) {
-        handleFirestoreError(error, OperationType.WRITE, infoPath);
-      }
+    (fullName: string, phone: string, savedAddress: string, preferredLang: Language) => {
+      const next: SavedProfile = {
+        fullName: fullName.trim().slice(0, 120),
+        phone: phone.trim().slice(0, 32),
+        savedAddress: savedAddress.trim().slice(0, 300),
+        preferredLang,
+      };
+      setSavedProfile(next);
+      writeJsonStorage(PROFILE_STORAGE_KEY, next);
     },
-    [user, savedProfile]
+    []
   );
+
+  const recordOrderToken = useCallback((orderRef: string, token: string) => {
+    if (!orderRef || !token) return;
+    setSavedOrderTokens((prev) => {
+      const filtered = prev.filter((entry) => entry.orderRef !== orderRef);
+      const next = [{ orderRef, token }, ...filtered].slice(0, 30);
+      writeJsonStorage(ORDER_TOKENS_STORAGE_KEY, next);
+      return next;
+    });
+  }, []);
 
   return (
     <AuthContext.Provider
       value={{
-        user,
         authReady,
-        idToken,
+        staffToken,
+        staffUser,
+        needsInitialSetup,
+        defaultAdminUsername,
+        authError,
         wishlistIds,
         savedProfile,
-        authError,
-        signInWithGoogle,
-        logout,
-        getFreshToken,
+        savedOrderTokens,
+        refreshAuthStatus,
+        loginStaff,
+        setupInitialAdmin,
+        logoutStaff,
+        getStaffToken,
+        setStaffUser,
         toggleWishlist,
         saveCheckoutContact,
+        recordOrderToken,
       }}
     >
       {children}

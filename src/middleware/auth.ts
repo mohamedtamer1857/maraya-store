@@ -1,50 +1,38 @@
 import type { NextFunction, Request, Response } from 'express';
-import type { DecodedIdToken } from 'firebase-admin/auth';
-import { getAdminAuth } from '../lib/firebase-admin.ts';
+import { verifyStaffToken } from '../lib/staffAuth.ts';
+import { getStaffMemberByUsername } from '../store/staff.ts';
+import type { StaffMemberDTO } from '../store/staff.ts';
 
-export interface AuthRequest extends Request {
-  user?: DecodedIdToken;
+export interface StaffAuthRequest extends Request {
+  staff?: StaffMemberDTO;
 }
 
-export const requireAuth = async (
-  req: AuthRequest,
+export const requireStaffAuth = (
+  req: StaffAuthRequest,
   res: Response,
   next: NextFunction
 ) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Unauthorized: Missing token' });
+    res.status(401).json({ error: 'Unauthorized: Missing session token' });
     return;
   }
 
-  const token = authHeader.split('Bearer ')[1];
-  try {
-    const decodedToken = await getAdminAuth().verifyIdToken(token);
-    req.user = decodedToken;
-    next();
-  } catch (error) {
-    console.error('Error verifying Firebase ID token:', error);
-    res.status(401).json({ error: 'Unauthorized: Invalid token' });
-  }
-};
-
-export const optionalAuth = async (
-  req: AuthRequest,
-  _res: Response,
-  next: NextFunction
-) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    next();
+  const token = authHeader.slice('Bearer '.length).trim();
+  const payload = verifyStaffToken(token);
+  if (!payload) {
+    res.status(401).json({ error: 'Unauthorized: Invalid or expired session' });
     return;
   }
 
-  const token = authHeader.split('Bearer ')[1];
-  try {
-    const decodedToken = await getAdminAuth().verifyIdToken(token);
-    req.user = decodedToken;
-  } catch {
-    // Allow unauthenticated guest flow when optional token is absent/expired
+  const staff = getStaffMemberByUsername(payload.sub);
+  if (!staff || !staff.isActive) {
+    res.status(403).json({
+      error: 'Access denied: This staff account is inactive or no longer authorized.',
+    });
+    return;
   }
+
+  req.staff = staff;
   next();
 };

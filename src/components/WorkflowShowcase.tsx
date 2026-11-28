@@ -3,10 +3,10 @@ import { AnimatePresence, motion } from 'motion/react';
 import {
   ArrowLeft,
   ArrowRight,
+  BookmarkCheck,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  LogIn,
   MapPin,
   PackageCheck,
   ShoppingBag,
@@ -29,7 +29,7 @@ export function WorkflowShowcase({
   onOpenCart,
   onOpenOrders,
 }: WorkflowShowcaseProps) {
-  const { user, savedProfile, signInWithGoogle } = useAuth();
+  const { savedProfile } = useAuth();
   const [activeStep, setActiveStep] = useState(0);
   const [direction, setDirection] = useState(1);
 
@@ -72,8 +72,8 @@ export function WorkflowShowcase({
         ? 'لما تفتح الشنطة وتضغط «كمل الأوردر»، النظام بيحدد موقعك الحالي تلقائياً أو يتيح لك تفتح خريطة مصر جوه الشنطة وتضغط على عنوانك بالتحديد.'
         : 'Inside Checkout, your current GPS location is detected automatically—or open the interactive Egypt map right in the drawer to search or drop a delivery pin.',
       nextHint: isRtl
-        ? 'الخطوة الجاية: سجل دخول بحساب جوجل عشان عنوانك يفضل محفوظ لأي طلب جاي.'
-        : 'Next step: Keep your pinned address saved automatically to your Google account.',
+        ? 'الخطوة الجاية: بيانات وعنوان التوصيل بيتحفظوا تلقائياً على متصفحك لأي طلب جاي.'
+        : 'Next step: Your delivery address and phone are saved automatically on this browser.',
       ctaLabel: isRtl
         ? `افتح الشنطة (${cartCount})`
         : `Open Shopping Bag (${cartCount})`,
@@ -85,50 +85,36 @@ export function WorkflowShowcase({
     },
     {
       index: '03',
-      title: isRtl ? 'احفظ عنوانك مع حسابك' : 'Save Address to Your Account',
-      shortLabel: isRtl ? 'حفظ الحساب' : 'Save Profile',
+      title: isRtl ? 'احفظ عنوانك لطلباتك الجاية' : 'Save Address for Future Orders',
+      shortLabel: isRtl ? 'حفظ العنوان' : 'Save Address',
       heading: isRtl
-        ? 'عنوانك ورقمك يفضلوا محفوظين دايماً مع تسجيل الدخول'
-        : 'Your location stays saved across sessions when signed in',
+        ? 'بياناتك وعنوانك بيفضلوا محفوظين تلقائياً من غير تسجيل حساب'
+        : 'Your delivery details stay saved locally with zero sign-up needed',
       body: isRtl
-        ? 'بمجرد ما تسجل دخول بحساب جوجل، لوكيشن التوصيل ورقم الموبايل بيتحفظوا في حسابك تلقائياً ومش هتحتاج تدخلهم من أول وجديد في أوردراتك الجاية.'
-        : 'While signed in with Google, your chosen delivery address and phone number stay securely saved to your profile and auto-fill on every future order.',
+        ? 'أول ما تأكد عنوانك أو تضغط «حفظ بيانات التوصيل»، الاسم ورقم الموبايل ولوكيشن التوصيل بيتحفظوا على جهازك عشان يملوا تلقائياً في طلباتك الجاية.'
+        : 'As soon as you save or confirm a delivery address, your name, phone, and pinned location stay saved in your browser to auto-fill future orders.',
       nextHint: isRtl
         ? 'الخطوة الجاية: بعد تأكيد الأوردر تقدر تتابع حالته لحظة بلحظة.'
         : 'Next step: Follow your parcel progress live after confirmation.',
-      ctaLabel: user
-        ? savedProfile?.savedAddress
-          ? isRtl
-            ? 'حسابك متفعّل وعنوانك محفوظ'
-            : 'Account Active · Location Saved'
-          : isRtl
-          ? 'حسابك مسجل · افتح الشنطة لحفظ العنوان'
-          : 'Signed In · Open Bag to Save Location'
+      ctaLabel: savedProfile?.savedAddress
+        ? isRtl
+          ? 'عنوانك محفوظ · افتح الشنطة'
+          : 'Address Saved · Open Bag'
         : isRtl
-        ? 'سجل دخول بجوجل لحفظ لوكيشنك'
-        : 'Sign In with Google to Save Location',
-      onCta: () => {
-        if (!user) {
-          void signInWithGoogle();
-        } else {
-          onOpenCart();
-        }
-      },
-      Icon: LogIn,
+        ? 'افتح الشنطة لحفظ العنوان'
+        : 'Open Bag to Save Address',
+      onCta: onOpenCart,
+      Icon: BookmarkCheck,
       previewLines: isRtl
         ? [
-            user
-              ? `الحساب المتصل: ${user.email || user.displayName}`
-              : 'تسجيل دخول سريع بضغطة واحدة بحساب Google',
+            'طلب سريع مباشر بدون خطوات تسجيل دخول إضافية',
             savedProfile?.savedAddress
               ? `العنوان المحفوظ: ${savedProfile.savedAddress}`
-              : 'يتم حفظ آخر لوكيشن تلقائياً فور تأكيده',
+              : 'يتم حفظ آخر لوكيشن تلقائياً فور تأكيد الطلب',
             'إمكانية التعديل في أي وقت من الشنطة',
           ]
         : [
-            user
-              ? `Signed in: ${user.email || user.displayName}`
-              : 'One-click Google Sign-In',
+            'Fast guest checkout with zero account friction',
             savedProfile?.savedAddress
               ? `Saved location: ${savedProfile.savedAddress}`
               : 'Automatically stores your latest confirmed address',
@@ -140,22 +126,16 @@ export function WorkflowShowcase({
       title: isRtl ? 'تابع أوردرك خطوة بخطوة' : 'Track Delivery Live',
       shortLabel: isRtl ? 'متابعة الأوردر' : 'Track Order',
       heading: isRtl
-        ? 'مراقبة مراحل التجهيز والشحن والتوصيل من سجل أوردراتي'
+        ? 'مراقبة مراحل التجهيز والشحن والتوصيل من أوردراتي'
         : 'Visual order progress from atelier prep to doorstep',
       body: isRtl
-        ? 'أول ما تأكد الأوردر بيظهر لك في «سجل أوردراتي» مع شريط متابعة مرئي بيتحدث أول بأول من فريق التجهيز في دار مَرايا لحد ما يوصلك.'
-        : 'Every confirmed order includes a visual progress tracker inside My Order History updating in real time from Processing to Shipped and Delivered.',
+        ? 'أول ما تأكد الأوردر بيظهر لك في «أوردراتي» مع شريط متابعة مرئي بيتحدث أول بأول، وكمان تقدر تبحث عن أي طلب برقم الأوردر والموبايل.'
+        : 'Every confirmed order appears immediately in My Orders with a live progress tracker, and you can also look up any order anytime by Order Ref and phone.',
       nextHint: isRtl
         ? 'تقدر ترجع تبدأ أوردر جديد في أي وقت أو تراجع طلباتك السابقة.'
         : 'You are all set—review active parcels or explore new arrivals anytime.',
       ctaLabel: isRtl ? 'افتح سجل أوردراتي' : 'View My Order History',
-      onCta: () => {
-        if (!user) {
-          void signInWithGoogle();
-        } else {
-          onOpenOrders();
-        }
-      },
+      onCta: onOpenOrders,
       Icon: Truck,
       previewLines: isRtl
         ? ['٠١ · قيد التجهيز والمراجعة في الدار', '٠٢ · تم الشحن مع المندوب داخل مصر', '٠٣ · تم التوصيل بنجاح لباب بيتك']

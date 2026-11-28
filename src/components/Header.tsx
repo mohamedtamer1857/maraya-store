@@ -1,6 +1,5 @@
-import { Languages, LogIn, LogOut, Moon, Package, ShoppingBag, Sun } from 'lucide-react';
+import { Languages, Moon, Package, ShoppingBag, Sun } from 'lucide-react';
 import { BrandLogo } from './BrandLogo';
-import { useAuth } from '../contexts/AuthContext';
 import type { Language, Theme } from '../types';
 import type { Translations } from '../i18n/translations';
 
@@ -27,8 +26,6 @@ export function Header({
   onOpenOrders,
   onOpenStore,
 }: HeaderProps) {
-  const { user, signInWithGoogle, logout } = useAuth();
-
   return (
     <header className="sticky top-0 z-40 w-full border-b border-black/[0.08] bg-[#F8F8FA]/90 backdrop-blur-md dark:border-white/[0.08] dark:bg-[#0B0D11]/90 transition-colors duration-200">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
@@ -66,40 +63,19 @@ export function Header({
           </a>
         </nav>
 
-        {/* Zone 3: Account, Language, Theme & Bag */}
+        {/* Zone 3: My Orders, Language, Theme & Bag */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          {user ? (
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={onOpenOrders}
-                title={lang === 'ar' ? 'سجل أوردراتي' : 'Order History'}
-                className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-black/[0.1] dark:border-white/[0.12] px-2.5 text-xs font-semibold text-[#0F1115] hover:bg-black/[0.04] dark:text-[#F4F5F7] dark:hover:bg-white/[0.06] whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <Package className="h-3.5 w-3.5 text-[#1D4ED8] dark:text-[#60A5FA]" />
-                <span className="hidden md:inline max-w-[90px] truncate">
-                  {user.displayName?.split(' ')[0] || (lang === 'ar' ? 'أوردراتي' : 'Orders')}
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={() => void logout()}
-                aria-label={lang === 'ar' ? 'تسجيل الخروج' : 'Sign out'}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[#525866] hover:bg-black/[0.05] hover:text-[#0F1115] dark:text-[#D1D5DB] dark:hover:bg-white/[0.06] cursor-pointer"
-              >
-                <LogOut className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void signInWithGoogle()}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-black/[0.1] dark:border-white/[0.12] px-2.5 text-xs font-semibold text-[#0F1115] hover:bg-black/[0.04] dark:text-[#F4F5F7] dark:hover:bg-white/[0.06] whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <LogIn className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">{lang === 'ar' ? 'تسجيل الدخول' : 'Sign in'}</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onOpenOrders}
+            title={lang === 'ar' ? 'سجل ومتابعة أوردراتي' : 'My Orders & Tracking'}
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-black/[0.1] dark:border-white/[0.12] px-2.5 text-xs font-semibold text-[#0F1115] hover:bg-black/[0.04] dark:text-[#F4F5F7] dark:hover:bg-white/[0.06] whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Package className="h-3.5 w-3.5 text-[#1D4ED8] dark:text-[#60A5FA]" aria-hidden="true" />
+            <span className="hidden sm:inline">
+              {lang === 'ar' ? 'أوردراتي' : 'My Orders'}
+            </span>
+          </button>
 
           <button
             type="button"

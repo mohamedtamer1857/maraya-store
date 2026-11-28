@@ -4,7 +4,7 @@
   "outputDirectory": "dist",
   "functions": {
     "api/index.mjs": {
-      "includeFiles": "firebase-applet-config.json"
+      "includeFiles": "data/maraya-store.json"
     }
   },
   "rewrites": [

@@ -3,32 +3,27 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
-import { optionalAuth, requireAuth } from './middleware/auth.ts';
-import type { AuthRequest } from './middleware/auth.ts';
-import {
-  DatabaseNotConfiguredError,
-  ensureDatabaseSchema,
-  isDatabaseConfigured,
-} from './db/index.ts';
-import { getOrCreateUser } from './db/users.ts';
+import { requireStaffAuth } from './middleware/auth.ts';
+import type { StaffAuthRequest } from './middleware/auth.ts';
+import { signOrderAccessToken, signStaffToken } from './lib/staffAuth.ts';
 import {
   addOrderStaffNote,
   createOrderRecord,
   deleteOrderStaffNote,
   getAllOrdersForStaff,
-  getOrdersForUid,
+  getOrdersForCustomerLookup,
   getSalesSummaryForStaff,
   InsufficientStockError,
   isValidOrderStatus,
   updateOrderStatusByRef,
-} from './db/orders.ts';
+} from './store/orders.ts';
 import {
   createProductForStaff,
   isValidProductCategory,
   listAllProductsForStaff,
   listPublicProducts,
   updateProductByIdForStaff,
-} from './db/products.ts';
+} from './store/products.ts';
 import {
   createCategoryForStaff,
   deleteCategoryBySlugForStaff,
@@ -36,16 +31,18 @@ import {
   listPublicCategories,
   normalizeCategorySlug,
   updateCategoryBySlugForStaff,
-} from './db/categories.ts';
+} from './store/categories.ts';
 import {
+  authenticateStaffCredentials,
+  claimInitialAdmin,
   deleteStaffMemberById,
-  getStaffMemberByEmail,
+  getStaffAuthStatus,
   listStaffMembers,
   normalizeRole,
   updateStaffMemberById,
   upsertStaffMember,
-} from './db/staff.ts';
-import type { StaffMemberDTO, StaffPermissionKey } from './db/staff.ts';
+} from './store/staff.ts';
+import type { StaffMemberDTO, StaffPermissionKey } from './store/staff.ts';
 
 const PRODUCT_UPLOADS_DIR = path.resolve(process.cwd(), 'public', 'uploads', 'products');
 
@@ -62,23 +59,15 @@ function parseSizeStockPayload(raw: unknown): Record<string, number> | undefined
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
-async function resolveVerifiedStaff(
-  req: AuthRequest,
+function resolveVerifiedStaff(
+  req: StaffAuthRequest,
   res: Response,
   requiredPermission?: StaffPermissionKey
-): Promise<StaffMemberDTO | null> {
-  const email = typeof req.user?.email === 'string' ? req.user.email.trim().toLowerCase() : '';
-  const emailVerified = req.user?.email_verified === true;
-  if (!email || !emailVerified) {
-    res.status(403).json({ error: 'Verified Google account email is required for staff access.' });
-    return null;
-  }
-
-  const displayName = typeof req.user?.name === 'string' ? req.user.name : null;
-  const staff = await getStaffMemberByEmail(email, displayName);
+): StaffMemberDTO | null {
+  const staff = req.staff;
   if (!staff || !staff.isActive) {
     res.status(403).json({
-      error: 'Access denied: Your Google account does not have active staff permissions.',
+      error: 'Access denied: Active staff account is required.',
     });
     return null;
   }
@@ -125,7 +114,7 @@ export function createApiApp() {
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({
       ok: true,
-      databaseConfigured: isDatabaseConfigured(),
+      storage: process.env.VERCEL ? 'serverless-json' : 'file-json',
       runtime: process.env.VERCEL ? 'vercel' : 'node',
     });
   });
@@ -202,7 +191,6 @@ export function createApiApp() {
       const data = (await geoRes.json()) as {
         status?: string;
         results?: Array<{ formatted_address?: string }>;
-        error_message?: string;
       };
 
       if (data.status === 'OVER_QUERY_LIMIT') {
@@ -250,64 +238,18 @@ export function createApiApp() {
 
   app.get('/api/products', async (_req: Request, res: Response) => {
     try {
-      await ensureDatabaseSchema();
       const [products, categories] = await Promise.all([
         listPublicProducts(),
         listPublicCategories(),
       ]);
       res.json({ products, categories });
     } catch (error: unknown) {
-      if (error instanceof DatabaseNotConfiguredError) {
-        res.status(503).json({ error: error.message, code: error.code });
-        return;
-      }
       const message = error instanceof Error ? error.message : 'Unable to load catalog.';
       res.status(500).json({ error: message });
     }
   });
 
-  app.post('/api/me/sync', requireAuth, async (req: AuthRequest, res: Response) => {
-    try {
-      await ensureDatabaseSchema();
-      const uid = req.user?.uid;
-      if (!uid) {
-        res.status(401).json({ error: 'Unauthorized' });
-        return;
-      }
-      const dbUser = await getOrCreateUser(
-        uid,
-        req.user?.email ?? `${uid}@maraya.local`,
-        typeof req.user?.name === 'string' ? req.user.name : null
-      );
-      res.json({ user: dbUser });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unable to sync user.';
-      res.status(500).json({ error: message });
-    }
-  });
-
-  app.get('/api/orders', requireAuth, async (req: AuthRequest, res: Response) => {
-    try {
-      await ensureDatabaseSchema();
-      const uid = req.user?.uid;
-      if (!uid) {
-        res.status(401).json({ error: 'Unauthorized' });
-        return;
-      }
-      await getOrCreateUser(
-        uid,
-        req.user?.email ?? `${uid}@maraya.local`,
-        typeof req.user?.name === 'string' ? req.user.name : null
-      );
-      const list = await getOrdersForUid(uid);
-      res.json({ orders: list });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unable to fetch orders.';
-      res.status(500).json({ error: message });
-    }
-  });
-
-  app.post('/api/orders', optionalAuth, async (req: AuthRequest, res: Response) => {
+  app.post('/api/orders', async (req: Request, res: Response) => {
     const body = req.body as {
       fullName?: unknown;
       phone?: unknown;
@@ -357,20 +299,8 @@ export function createApiApp() {
     const orderRef = `MRY-${Math.floor(1000 + Math.random() * 9000)}`;
 
     try {
-      await ensureDatabaseSchema();
-      let userId: number | null = null;
-      if (req.user?.uid) {
-        const dbUser = await getOrCreateUser(
-          req.user.uid,
-          req.user.email ?? `${req.user.uid}@maraya.local`,
-          typeof req.user.name === 'string' ? req.user.name : null
-        );
-        userId = dbUser?.id ?? null;
-      }
-
       const createdOrder = await createOrderRecord({
         orderRef,
-        userId,
         fullName,
         phone,
         address,
@@ -381,8 +311,11 @@ export function createApiApp() {
         items: parsedItems,
       });
 
+      const orderToken = signOrderAccessToken(orderRef);
+
       res.status(201).json({
         orderRef,
+        orderToken,
         fullName,
         phone,
         address,
@@ -400,38 +333,113 @@ export function createApiApp() {
     }
   });
 
-  app.get('/api/staff/me', requireAuth, async (req: AuthRequest, res: Response) => {
+  app.post('/api/orders/history', async (req: Request, res: Response) => {
     try {
-      await ensureDatabaseSchema();
-      const email = typeof req.user?.email === 'string' ? req.user.email.trim().toLowerCase() : '';
-      const emailVerified = req.user?.email_verified === true;
-      if (!email || !emailVerified) {
-        res.json({ isStaff: false, staff: null, email: email || null, emailVerified });
-        return;
-      }
+      const body = req.body as {
+        tokens?: unknown;
+        lookup?: { orderRef?: unknown; phone?: unknown } | null;
+      };
 
-      const displayName = typeof req.user?.name === 'string' ? req.user.name : null;
-      const staff = await getStaffMemberByEmail(email, displayName);
-      if (!staff || !staff.isActive) {
-        res.json({ isStaff: false, staff: null, email, emailVerified });
-        return;
-      }
+      const tokens = Array.isArray(body.tokens)
+        ? body.tokens.filter((t): t is string => typeof t === 'string')
+        : [];
 
-      res.json({ isStaff: true, staff, email, emailVerified });
+      const lookup =
+        body.lookup &&
+        typeof body.lookup.orderRef === 'string' &&
+        typeof body.lookup.phone === 'string'
+          ? {
+              orderRef: body.lookup.orderRef.trim(),
+              phone: body.lookup.phone.trim(),
+            }
+          : null;
+
+      const list = await getOrdersForCustomerLookup({ tokens, lookup });
+      res.json({ orders: list });
     } catch (error: unknown) {
-      if (error instanceof DatabaseNotConfiguredError) {
-        res.status(503).json({ error: error.message, code: error.code });
-        return;
-      }
-      const message = error instanceof Error ? error.message : 'Unable to verify staff profile.';
+      const message = error instanceof Error ? error.message : 'Unable to load orders.';
       res.status(500).json({ error: message });
     }
   });
 
-  app.get('/api/staff/orders', requireAuth, async (req: AuthRequest, res: Response) => {
+  app.get('/api/staff/auth-status', (_req: Request, res: Response) => {
+    res.json(getStaffAuthStatus());
+  });
+
+  app.post('/api/staff/setup-admin', async (req: Request, res: Response) => {
     try {
-      await ensureDatabaseSchema();
-      const staff = await resolveVerifiedStaff(req, res, 'canViewOrders');
+      const status = getStaffAuthStatus();
+      if (!status.needsInitialSetup) {
+        res.status(409).json({
+          error: 'Administrator password is already configured. Please sign in normally.',
+        });
+        return;
+      }
+
+      const body = req.body as {
+        username?: unknown;
+        password?: unknown;
+        displayName?: unknown;
+      };
+      const username = typeof body.username === 'string' ? body.username : status.defaultUsername;
+      const password = typeof body.password === 'string' ? body.password : '';
+      const displayName = typeof body.displayName === 'string' ? body.displayName : null;
+
+      const staff = await claimInitialAdmin({ username, password, displayName });
+      const token = signStaffToken({
+        username: staff.username,
+        staffId: staff.id,
+        role: staff.role,
+      });
+      res.status(201).json({ token, staff });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unable to complete initial setup.';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post('/api/staff/login', async (req: Request, res: Response) => {
+    try {
+      const body = req.body as { username?: unknown; password?: unknown };
+      const username = typeof body.username === 'string' ? body.username : '';
+      const password = typeof body.password === 'string' ? body.password : '';
+
+      if (!username.trim() || !password) {
+        res.status(400).json({ error: 'Username and password are required.' });
+        return;
+      }
+
+      const staff = await authenticateStaffCredentials(username, password);
+      if (!staff) {
+        res.status(401).json({ error: 'Invalid username or password.' });
+        return;
+      }
+
+      const token = signStaffToken({
+        username: staff.username,
+        staffId: staff.id,
+        role: staff.role,
+      });
+
+      res.json({ token, staff });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unable to sign in.';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.get('/api/staff/me', requireStaffAuth, (req: StaffAuthRequest, res: Response) => {
+    const staff = req.staff;
+    if (!staff || !staff.isActive) {
+      res.json({ isStaff: false, staff: null });
+      return;
+    }
+    res.json({ isStaff: true, staff });
+  });
+
+  app.get('/api/staff/orders', requireStaffAuth, async (req: StaffAuthRequest, res: Response) => {
+    try {
+      const staff = resolveVerifiedStaff(req, res, 'canViewOrders');
       if (!staff) return;
 
       const ordersList = await getAllOrdersForStaff();
@@ -444,11 +452,10 @@ export function createApiApp() {
 
   app.patch(
     '/api/staff/orders/:orderRef/status',
-    requireAuth,
-    async (req: AuthRequest, res: Response) => {
+    requireStaffAuth,
+    async (req: StaffAuthRequest, res: Response) => {
       try {
-        await ensureDatabaseSchema();
-        const staff = await resolveVerifiedStaff(req, res, 'canUpdateOrderStatus');
+        const staff = resolveVerifiedStaff(req, res, 'canUpdateOrderStatus');
         if (!staff) return;
 
         const orderRef = typeof req.params.orderRef === 'string' ? req.params.orderRef.trim() : '';
@@ -479,11 +486,10 @@ export function createApiApp() {
 
   app.post(
     '/api/staff/orders/:orderRef/notes',
-    requireAuth,
-    async (req: AuthRequest, res: Response) => {
+    requireStaffAuth,
+    async (req: StaffAuthRequest, res: Response) => {
       try {
-        await ensureDatabaseSchema();
-        const staff = await resolveVerifiedStaff(req, res, 'canUpdateOrderStatus');
+        const staff = resolveVerifiedStaff(req, res, 'canUpdateOrderStatus');
         if (!staff) return;
 
         const orderRef = typeof req.params.orderRef === 'string' ? req.params.orderRef.trim() : '';
@@ -501,9 +507,8 @@ export function createApiApp() {
 
         const created = await addOrderStaffNote({
           orderRef,
-          staffEmail: staff.email,
-          staffName:
-            staff.displayName || (typeof req.user?.name === 'string' ? req.user.name : null),
+          staffUsername: staff.username,
+          staffName: staff.displayName || staff.username,
           note,
         });
 
@@ -522,11 +527,10 @@ export function createApiApp() {
 
   app.delete(
     '/api/staff/orders/:orderRef/notes/:noteId',
-    requireAuth,
-    async (req: AuthRequest, res: Response) => {
+    requireStaffAuth,
+    async (req: StaffAuthRequest, res: Response) => {
       try {
-        await ensureDatabaseSchema();
-        const staff = await resolveVerifiedStaff(req, res, 'canUpdateOrderStatus');
+        const staff = resolveVerifiedStaff(req, res, 'canUpdateOrderStatus');
         if (!staff) return;
 
         const orderRef = typeof req.params.orderRef === 'string' ? req.params.orderRef.trim() : '';
@@ -550,10 +554,9 @@ export function createApiApp() {
     }
   );
 
-  app.get('/api/staff/sales', requireAuth, async (req: AuthRequest, res: Response) => {
+  app.get('/api/staff/sales', requireStaffAuth, async (req: StaffAuthRequest, res: Response) => {
     try {
-      await ensureDatabaseSchema();
-      const staff = await resolveVerifiedStaff(req, res, 'canViewSales');
+      const staff = resolveVerifiedStaff(req, res, 'canViewSales');
       if (!staff) return;
 
       const summary = await getSalesSummaryForStaff();
@@ -564,10 +567,9 @@ export function createApiApp() {
     }
   });
 
-  app.get('/api/staff/members', requireAuth, async (req: AuthRequest, res: Response) => {
+  app.get('/api/staff/members', requireStaffAuth, async (req: StaffAuthRequest, res: Response) => {
     try {
-      await ensureDatabaseSchema();
-      const staff = await resolveVerifiedStaff(req, res, 'canManageStaff');
+      const staff = resolveVerifiedStaff(req, res, 'canManageStaff');
       if (!staff) return;
 
       const members = await listStaffMembers();
@@ -578,25 +580,21 @@ export function createApiApp() {
     }
   });
 
-  app.post('/api/staff/members', requireAuth, async (req: AuthRequest, res: Response) => {
+  app.post('/api/staff/members', requireStaffAuth, async (req: StaffAuthRequest, res: Response) => {
     try {
-      await ensureDatabaseSchema();
-      const staff = await resolveVerifiedStaff(req, res, 'canManageStaff');
+      const staff = resolveVerifiedStaff(req, res, 'canManageStaff');
       if (!staff) return;
 
       const body = req.body as Record<string, unknown>;
-      const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 160) {
-        res.status(400).json({ error: 'Please provide a valid Google email address.' });
-        return;
-      }
-
+      const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : '';
+      const password = typeof body.password === 'string' ? body.password : undefined;
       const displayName =
         typeof body.displayName === 'string' ? body.displayName.trim().slice(0, 120) : null;
 
       const created = await upsertStaffMember({
-        email,
+        username,
         displayName,
+        password,
         role: normalizeRole(body.role),
         canViewOrders: body.canViewOrders !== false,
         canUpdateOrderStatus: body.canUpdateOrderStatus === true,
@@ -613,10 +611,9 @@ export function createApiApp() {
     }
   });
 
-  app.patch('/api/staff/members/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+  app.patch('/api/staff/members/:id', requireStaffAuth, async (req: StaffAuthRequest, res: Response) => {
     try {
-      await ensureDatabaseSchema();
-      const staff = await resolveVerifiedStaff(req, res, 'canManageStaff');
+      const staff = resolveVerifiedStaff(req, res, 'canManageStaff');
       if (!staff) return;
 
       const id = Number(req.params.id);
@@ -629,6 +626,7 @@ export function createApiApp() {
       const updated = await updateStaffMemberById(id, {
         displayName:
           typeof body.displayName === 'string' ? body.displayName.trim().slice(0, 120) : undefined,
+        password: typeof body.password === 'string' && body.password ? body.password : undefined,
         role: body.role !== undefined ? normalizeRole(body.role) : undefined,
         canViewOrders: typeof body.canViewOrders === 'boolean' ? body.canViewOrders : undefined,
         canUpdateOrderStatus:
@@ -653,10 +651,9 @@ export function createApiApp() {
     }
   });
 
-  app.delete('/api/staff/members/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+  app.delete('/api/staff/members/:id', requireStaffAuth, async (req: StaffAuthRequest, res: Response) => {
     try {
-      await ensureDatabaseSchema();
-      const staff = await resolveVerifiedStaff(req, res, 'canManageStaff');
+      const staff = resolveVerifiedStaff(req, res, 'canManageStaff');
       if (!staff) return;
 
       const id = Number(req.params.id);
@@ -665,7 +662,7 @@ export function createApiApp() {
         return;
       }
 
-      const deleted = await deleteStaffMemberById(id, staff.email);
+      const deleted = await deleteStaffMemberById(id, staff.username);
       if (!deleted) {
         res.status(404).json({ error: 'Staff member not found.' });
         return;
@@ -678,10 +675,9 @@ export function createApiApp() {
     }
   });
 
-  app.get('/api/staff/products', requireAuth, async (req: AuthRequest, res: Response) => {
+  app.get('/api/staff/products', requireStaffAuth, async (req: StaffAuthRequest, res: Response) => {
     try {
-      await ensureDatabaseSchema();
-      const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+      const staff = resolveVerifiedStaff(req, res, 'canManageProducts');
       if (!staff) return;
 
       const [products, categories] = await Promise.all([
@@ -695,10 +691,9 @@ export function createApiApp() {
     }
   });
 
-  app.get('/api/staff/categories', requireAuth, async (req: AuthRequest, res: Response) => {
+  app.get('/api/staff/categories', requireStaffAuth, async (req: StaffAuthRequest, res: Response) => {
     try {
-      await ensureDatabaseSchema();
-      const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+      const staff = resolveVerifiedStaff(req, res, 'canManageProducts');
       if (!staff) return;
 
       const categories = await listAllCategoriesForStaff();
@@ -709,10 +704,9 @@ export function createApiApp() {
     }
   });
 
-  app.post('/api/staff/categories', requireAuth, async (req: AuthRequest, res: Response) => {
+  app.post('/api/staff/categories', requireStaffAuth, async (req: StaffAuthRequest, res: Response) => {
     try {
-      await ensureDatabaseSchema();
-      const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+      const staff = resolveVerifiedStaff(req, res, 'canManageProducts');
       if (!staff) return;
 
       const body = req.body as Record<string, unknown>;
@@ -730,11 +724,10 @@ export function createApiApp() {
 
   app.patch(
     '/api/staff/categories/:slug',
-    requireAuth,
-    async (req: AuthRequest, res: Response) => {
+    requireStaffAuth,
+    async (req: StaffAuthRequest, res: Response) => {
       try {
-        await ensureDatabaseSchema();
-        const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+        const staff = resolveVerifiedStaff(req, res, 'canManageProducts');
         if (!staff) return;
 
         const slug = normalizeCategorySlug(
@@ -765,11 +758,10 @@ export function createApiApp() {
 
   app.delete(
     '/api/staff/categories/:slug',
-    requireAuth,
-    async (req: AuthRequest, res: Response) => {
+    requireStaffAuth,
+    async (req: StaffAuthRequest, res: Response) => {
       try {
-        await ensureDatabaseSchema();
-        const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+        const staff = resolveVerifiedStaff(req, res, 'canManageProducts');
         if (!staff) return;
 
         const slug = normalizeCategorySlug(
@@ -795,11 +787,10 @@ export function createApiApp() {
 
   app.post(
     '/api/staff/products/upload-image',
-    requireAuth,
-    async (req: AuthRequest, res: Response) => {
+    requireStaffAuth,
+    async (req: StaffAuthRequest, res: Response) => {
       try {
-        await ensureDatabaseSchema();
-        const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+        const staff = resolveVerifiedStaff(req, res, 'canManageProducts');
         if (!staff) return;
 
         const body = req.body as { dataUrl?: unknown };
@@ -839,7 +830,6 @@ export function createApiApp() {
           return;
         }
 
-        // On Vercel serverless, filesystem is read-only; return validated inline data URL (< 1.8 MB)
         if (process.env.VERCEL) {
           if (dataUrl.length > 2_500_000) {
             res.status(400).json({
@@ -880,10 +870,9 @@ export function createApiApp() {
     }
   );
 
-  app.post('/api/staff/products', requireAuth, async (req: AuthRequest, res: Response) => {
+  app.post('/api/staff/products', requireStaffAuth, async (req: StaffAuthRequest, res: Response) => {
     try {
-      await ensureDatabaseSchema();
-      const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+      const staff = resolveVerifiedStaff(req, res, 'canManageProducts');
       if (!staff) return;
 
       const body = req.body as Record<string, unknown>;
@@ -921,11 +910,10 @@ export function createApiApp() {
 
   app.patch(
     '/api/staff/products/:productId',
-    requireAuth,
-    async (req: AuthRequest, res: Response) => {
+    requireStaffAuth,
+    async (req: StaffAuthRequest, res: Response) => {
       try {
-        await ensureDatabaseSchema();
-        const staff = await resolveVerifiedStaff(req, res, 'canManageProducts');
+        const staff = resolveVerifiedStaff(req, res, 'canManageProducts');
         if (!staff) return;
 
         const productId =

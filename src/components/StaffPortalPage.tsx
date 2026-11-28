@@ -15,7 +15,9 @@ import {
   FileText,
   FolderPlus,
   ImagePlus,
+  KeyRound,
   Loader2,
+  Lock,
   LogIn,
   LogOut,
   MapPin,
@@ -36,24 +38,10 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import type { StaffProfile, StaffRole } from '../contexts/AuthContext';
 import type { Language, Product, StoreCategory } from '../types';
 
-type StaffRole = 'admin' | 'manager' | 'operations' | 'viewer';
 type OrderStatusValue = 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled';
-
-interface StaffProfile {
-  id: number;
-  email: string;
-  displayName: string | null;
-  role: StaffRole;
-  canViewOrders: boolean;
-  canUpdateOrderStatus: boolean;
-  canViewSales: boolean;
-  canManageStaff: boolean;
-  canManageProducts: boolean;
-  isActive: boolean;
-  isBootstrapAdmin: boolean;
-}
 
 interface StaffOrderItem {
   id: number;
@@ -66,7 +54,8 @@ interface StaffOrderItem {
 interface StaffOrderNote {
   id: number;
   orderId: number;
-  staffEmail: string;
+  staffUsername: string;
+  staffEmail?: string;
   staffName: string | null;
   note: string;
   createdAt: string;
@@ -238,15 +227,39 @@ async function parseApiJson<T>(res: Response, lang: Language): Promise<T> {
 }
 
 export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: StaffPortalPageProps) {
-  const { user, authReady, authError, signInWithGoogle, logout, getFreshToken } = useAuth();
+  const {
+    authReady,
+    staffToken,
+    staffUser,
+    needsInitialSetup,
+    defaultAdminUsername,
+    authError,
+    loginStaff,
+    setupInitialAdmin,
+    logoutStaff,
+    getStaffToken,
+    setStaffUser,
+  } = useAuth();
+
+  const staffProfile = staffUser;
 
   const [staffLoading, setStaffLoading] = useState(false);
-  const [staffProfile, setStaffProfile] = useState<StaffProfile | null>(null);
-  const [verifiedEmail, setVerifiedEmail] = useState<string | null>(null);
   const [portalError, setPortalError] = useState<string | null>(null);
-  const [needsNewTab, setNeedsNewTab] = useState(false);
-  const [dbNotConfigured, setDbNotConfigured] = useState(false);
   const [activeTab, setActiveTab] = useState<'orders' | 'products' | 'team'>('orders');
+
+  // Staff Username / Password Login & First-Run Setup State
+  const [loginUsername, setLoginUsername] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [loginSubmitting, setLoginSubmitting] = useState(false);
+
+  const [setupUsername, setSetupUsername] = useState('admin');
+  const [setupDisplayName, setSetupDisplayName] = useState('');
+  const [setupPassword, setSetupPassword] = useState('');
+  const [setupConfirmPassword, setSetupConfirmPassword] = useState('');
+  const [showSetupPassword, setShowSetupPassword] = useState(false);
+  const [setupLocalError, setSetupLocalError] = useState<string | null>(null);
+  const [setupSubmitting, setSetupSubmitting] = useState(false);
 
   // Orders & Sales state
   const [orders, setOrders] = useState<StaffOrderRecord[]>([]);
@@ -293,7 +306,9 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
   // Team management state
   const [members, setMembers] = useState<StaffProfile[]>([]);
   const [teamLoading, setTeamLoading] = useState(false);
-  const [newEmail, setNewEmail] = useState('');
+  const [newUsername, setNewUsername] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [newName, setNewName] = useState('');
   const [newRole, setNewRole] = useState<StaffRole>('operations');
   const [newPermOrders, setNewPermOrders] = useState(true);
@@ -303,105 +318,110 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
   const [newPermProducts, setNewPermProducts] = useState(false);
   const [savingMember, setSavingMember] = useState(false);
   const [teamFeedback, setTeamFeedback] = useState<string | null>(null);
+  const [resetMemberId, setResetMemberId] = useState<number | null>(null);
+  const [resetPasswordValue, setResetPasswordValue] = useState('');
+  const [savingResetPassword, setSavingResetPassword] = useState(false);
 
   const BackIcon = lang === 'ar' ? ArrowRight : ArrowLeft;
   const currencyLabel = lang === 'ar' ? 'ج.م' : 'EGP';
 
-  const loadStaffProfile = useCallback(async () => {
-    if (!user) {
-      setStaffProfile(null);
-      setVerifiedEmail(null);
-      setNeedsNewTab(false);
+  useEffect(() => {
+    if (defaultAdminUsername) {
+      setSetupUsername(defaultAdminUsername);
+    }
+  }, [defaultAdminUsername]);
+
+  const handleLoginSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!loginUsername.trim() || !loginPassword) return;
+    setLoginSubmitting(true);
+    setPortalError(null);
+    try {
+      const ok = await loginStaff(loginUsername, loginPassword);
+      if (ok) {
+        setLoginPassword('');
+      }
+    } finally {
+      setLoginSubmitting(false);
+    }
+  };
+
+  const handleInitialSetupSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setSetupLocalError(null);
+    setPortalError(null);
+
+    const cleanUser = setupUsername
+      .trim()
+      .toLowerCase()
+      .replace(/[\s\u200B-\u200F\u202A-\u202E\uFEFF]+/g, '')
+      .slice(0, 60);
+    if (!/^[\p{L}\p{N}][\p{L}\p{N}._@-]{1,59}$/u.test(cleanUser)) {
+      setSetupLocalError(
+        lang === 'ar'
+          ? 'اسم المستخدم غير صالح — استخدم حرفين على الأقل (أحرف أو أرقام أو . _ - @).'
+          : 'Invalid username — use at least 2 characters (letters, numbers, or . _ - @).'
+      );
+      return;
+    }
+    if (setupPassword.length < 6) {
+      setSetupLocalError(
+        lang === 'ar'
+          ? 'كلمة المرور يجب أن تكون 6 أحرف أو أرقام على الأقل.'
+          : 'Password must be at least 6 characters.'
+      );
+      return;
+    }
+    if (setupPassword !== setupConfirmPassword) {
+      setSetupLocalError(
+        lang === 'ar'
+          ? 'كلمتا المرور غير متطابقتين.'
+          : 'Passwords do not match.'
+      );
       return;
     }
 
+    setSetupSubmitting(true);
+    try {
+      const ok = await setupInitialAdmin(cleanUser, setupPassword, setupDisplayName);
+      if (ok) {
+        setSetupPassword('');
+        setSetupConfirmPassword('');
+      }
+    } finally {
+      setSetupSubmitting(false);
+    }
+  };
+
+  const verifyStaffSession = useCallback(async () => {
+    const token = getStaffToken();
+    if (!token) return;
     setStaffLoading(true);
     setPortalError(null);
-    setNeedsNewTab(false);
-    setDbNotConfigured(false);
     try {
-      let forceRefresh = false;
-      let lastError: unknown = null;
-
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const token = await getFreshToken(forceRefresh);
-          if (!token) {
-            setPortalError(
-              lang === 'ar'
-                ? 'تعذر الحصول على رمز التحقق من حساب جوجل. جرّب تحديث الصفحة أو تسجيل الدخول مجدداً.'
-                : 'Unable to retrieve Google verification token. Try refreshing or signing in again.'
-            );
-            return;
-          }
-
-          const res = await fetch('/api/staff/me', {
-            headers: { Authorization: `Bearer ${token}` },
-            cache: 'no-store',
-          });
-
-          if (res.status === 401 && !forceRefresh) {
-            forceRefresh = true;
-            continue;
-          }
-
-          if (res.status === 502 || res.status === 504) {
-            if (attempt < 2) {
-              await new Promise((r) => setTimeout(r, 650 * (attempt + 1)));
-              continue;
-            }
-          }
-
-          const data = await parseApiJson<{
-            isStaff?: boolean;
-            staff?: StaffProfile | null;
-            email?: string | null;
-            error?: string;
-            code?: string;
-          }>(res, lang);
-
-          if (!res.ok) {
-            if (res.status === 503 || data.code === 'DATABASE_NOT_CONFIGURED') {
-              setDbNotConfigured(true);
-              setPortalError(
-                data.error ||
-                  'Database connection is not configured on the server. Set DATABASE_URL in Vercel Environment Variables.'
-              );
-              setStaffProfile(null);
-              return;
-            }
-            if (res.status >= 500 && attempt < 2) {
-              await new Promise((r) => setTimeout(r, 650 * (attempt + 1)));
-              continue;
-            }
-            setPortalError(data.error || 'Unable to verify staff account.');
-            setStaffProfile(null);
-          } else {
-            setVerifiedEmail(data.email || user.email || null);
-            setStaffProfile(data.isStaff && data.staff ? data.staff : null);
-          }
-          return;
-        } catch (err) {
-          lastError = err;
-          if (err instanceof ProxyRedirectError) {
-            setNeedsNewTab(true);
-            throw err;
-          }
-          if (attempt < 2) {
-            await new Promise((r) => setTimeout(r, 650 * (attempt + 1)));
-            continue;
-          }
-          throw err;
-        }
+      const res = await fetch('/api/staff/me', {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+      });
+      if (res.status === 401) {
+        logoutStaff();
+        return;
       }
-
-      if (lastError) {
-        throw lastError;
+      const data = await parseApiJson<{
+        isStaff?: boolean;
+        staff?: StaffProfile | null;
+        error?: string;
+      }>(res, lang);
+      if (!res.ok) {
+        setPortalError(data.error || 'Unable to verify staff session.');
+        return;
       }
+      if (!data.isStaff || !data.staff) {
+        logoutStaff();
+        return;
+      }
+      setStaffUser(data.staff);
     } catch (err) {
-      if (err instanceof TypeError) {
-        setNeedsNewTab(true);
-      }
       setPortalError(
         err instanceof Error
           ? err.message
@@ -412,15 +432,15 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     } finally {
       setStaffLoading(false);
     }
-  }, [user, getFreshToken, lang]);
+  }, [getStaffToken, lang, logoutStaff, setStaffUser]);
 
   const loadDashboardData = useCallback(
     async (profile: StaffProfile) => {
+      const token = getStaffToken();
+      if (!token) return;
       setDataLoading(true);
       setPortalError(null);
       try {
-        const token = await getFreshToken();
-        if (!token) return;
         const headers = { Authorization: `Bearer ${token}` };
 
         const requests: Array<Promise<void>> = [];
@@ -429,6 +449,10 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
           requests.push(
             fetch('/api/staff/orders', { headers, cache: 'no-store' })
               .then(async (r) => {
+                if (r.status === 401) {
+                  logoutStaff();
+                  return;
+                }
                 const json = await parseApiJson<{ orders?: StaffOrderRecord[]; error?: string }>(r, lang);
                 if (!r.ok) {
                   throw new Error(json.error || 'Failed to load orders.');
@@ -444,6 +468,10 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
           requests.push(
             fetch('/api/staff/sales', { headers, cache: 'no-store' })
               .then(async (r) => {
+                if (r.status === 401) {
+                  logoutStaff();
+                  return;
+                }
                 const json = await parseApiJson<{ summary?: SalesSummary | null; error?: string }>(r, lang);
                 if (!r.ok) {
                   throw new Error(json.error || 'Failed to load sales summary.');
@@ -462,20 +490,24 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         setDataLoading(false);
       }
     },
-    [getFreshToken, lang]
+    [getStaffToken, lang, logoutStaff]
   );
 
   const loadTeamMembers = useCallback(
     async (profile: StaffProfile) => {
       if (!profile.canManageStaff) return;
+      const token = getStaffToken();
+      if (!token) return;
       setTeamLoading(true);
       try {
-        const token = await getFreshToken();
-        if (!token) return;
         const res = await fetch('/api/staff/members', {
           headers: { Authorization: `Bearer ${token}` },
           cache: 'no-store',
         });
+        if (res.status === 401) {
+          logoutStaff();
+          return;
+        }
         const data = await parseApiJson<{ members?: StaffProfile[]; error?: string }>(res, lang);
         if (!res.ok) {
           setPortalError(data.error || 'Unable to load staff permissions.');
@@ -488,7 +520,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         setTeamLoading(false);
       }
     },
-    [getFreshToken, lang]
+    [getStaffToken, lang, logoutStaff]
   );
 
   const loadCatalogProducts = useCallback(
@@ -497,14 +529,18 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         setCatalogProducts([]);
         return;
       }
+      const token = getStaffToken();
+      if (!token) return;
       setProductsLoading(true);
       try {
-        const token = await getFreshToken();
-        if (!token) return;
         const res = await fetch('/api/staff/products', {
           headers: { Authorization: `Bearer ${token}` },
           cache: 'no-store',
         });
+        if (res.status === 401) {
+          logoutStaff();
+          return;
+        }
         const data = await parseApiJson<{
           products?: Product[];
           categories?: StoreCategory[];
@@ -524,17 +560,18 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         setProductsLoading(false);
       }
     },
-    [getFreshToken, lang]
+    [getStaffToken, lang, logoutStaff]
   );
 
   useEffect(() => {
-    if (authReady) {
-      void loadStaffProfile();
+    if (!staffToken || !staffProfile) {
+      setOrders([]);
+      setSalesSummary(null);
+      setCatalogProducts([]);
+      setMembers([]);
+      setSelectedOrder(null);
+      return;
     }
-  }, [authReady, loadStaffProfile]);
-
-  useEffect(() => {
-    if (!staffProfile) return;
     void loadDashboardData(staffProfile);
     if (staffProfile.canManageProducts) {
       void loadCatalogProducts(staffProfile);
@@ -542,7 +579,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     if (staffProfile.canManageStaff) {
       void loadTeamMembers(staffProfile);
     }
-  }, [staffProfile, loadDashboardData, loadCatalogProducts, loadTeamMembers]);
+  }, [staffToken, staffProfile, loadDashboardData, loadCatalogProducts, loadTeamMembers]);
 
   useEffect(() => {
     if (!staffProfile) return;
@@ -570,7 +607,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     setUpdatingOrderRef(orderRef);
     setPortalError(null);
     try {
-      const token = await getFreshToken();
+      const token = getStaffToken();
       if (!token) return;
       const res = await fetch(`/api/staff/orders/${encodeURIComponent(orderRef)}/status`, {
         method: 'PATCH',
@@ -615,14 +652,18 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
   const handleAddStaffMember = async (e: FormEvent) => {
     e.preventDefault();
     if (!staffProfile?.canManageStaff) return;
-    const cleanEmail = newEmail.trim().toLowerCase();
-    if (!cleanEmail) return;
+    const cleanUsername = newUsername
+      .trim()
+      .toLowerCase()
+      .replace(/[\s\u200B-\u200F\u202A-\u202E\uFEFF]+/g, '')
+      .slice(0, 60);
+    if (!cleanUsername) return;
 
     setSavingMember(true);
     setPortalError(null);
     setTeamFeedback(null);
     try {
-      const token = await getFreshToken();
+      const token = getStaffToken();
       if (!token) return;
       const res = await fetch('/api/staff/members', {
         method: 'POST',
@@ -631,7 +672,8 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          email: cleanEmail,
+          username: cleanUsername,
+          password: newPassword || undefined,
           displayName: newName.trim() || null,
           role: newRole,
           canViewOrders: newPermOrders,
@@ -648,18 +690,63 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         return;
       }
 
-      setNewEmail('');
+      setNewUsername('');
+      setNewPassword('');
       setNewName('');
       setTeamFeedback(
         lang === 'ar'
-          ? `تم حفظ صلاحيات الموظف (${cleanEmail}) بنجاح.`
-          : `Saved permissions for ${cleanEmail}.`
+          ? `تم حفظ حساب وصلاحيات الموظف (${cleanUsername}) بنجاح.`
+          : `Saved credentials & permissions for ${cleanUsername}.`
       );
       await loadTeamMembers(staffProfile);
     } catch (err) {
       setPortalError(err instanceof Error ? err.message : 'Unable to add staff member.');
     } finally {
       setSavingMember(false);
+    }
+  };
+
+  const handleResetMemberPassword = async (member: StaffProfile) => {
+    if (!staffProfile?.canManageStaff) return;
+    if (resetPasswordValue.length < 6) {
+      setPortalError(
+        lang === 'ar'
+          ? 'كلمة المرور الجديدة يجب أن تكون 6 أحرف أو أرقام على الأقل.'
+          : 'New password must be at least 6 characters.'
+      );
+      return;
+    }
+
+    setSavingResetPassword(true);
+    setPortalError(null);
+    setTeamFeedback(null);
+    try {
+      const token = getStaffToken();
+      if (!token) return;
+      const res = await fetch(`/api/staff/members/${member.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ password: resetPasswordValue }),
+      });
+      const data = await parseApiJson<{ member?: StaffProfile; error?: string }>(res, lang);
+      if (!res.ok) {
+        setPortalError(data.error || 'Unable to update password.');
+        return;
+      }
+      setResetMemberId(null);
+      setResetPasswordValue('');
+      setTeamFeedback(
+        lang === 'ar'
+          ? `تم تحديث كلمة مرور الموظف (${member.username}) بنجاح.`
+          : `Updated password for ${member.username}.`
+      );
+    } catch (err) {
+      setPortalError(err instanceof Error ? err.message : 'Unable to update password.');
+    } finally {
+      setSavingResetPassword(false);
     }
   };
 
@@ -678,7 +765,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     setPortalError(null);
     setTeamFeedback(null);
     try {
-      const token = await getFreshToken();
+      const token = getStaffToken();
       if (!token) return;
       const res = await fetch(`/api/staff/members/${member.id}`, {
         method: 'PATCH',
@@ -695,8 +782,8 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
       }
       if (data.member) {
         setMembers((prev) => prev.map((m) => (m.id === member.id ? data.member! : m)));
-        if (data.member.email === staffProfile.email) {
-          setStaffProfile(data.member);
+        if (data.member.username === staffProfile.username) {
+          setStaffUser(data.member);
         }
       }
     } catch (err) {
@@ -709,7 +796,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     const preset = ROLE_PRESETS[nextRole];
     setPortalError(null);
     try {
-      const token = await getFreshToken();
+      const token = getStaffToken();
       if (!token) return;
       const res = await fetch(`/api/staff/members/${member.id}`, {
         method: 'PATCH',
@@ -743,7 +830,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     if (!staffProfile?.canManageStaff) return;
     setPortalError(null);
     try {
-      const token = await getFreshToken();
+      const token = getStaffToken();
       if (!token) return;
       const res = await fetch(`/api/staff/members/${member.id}`, {
         method: 'DELETE',
@@ -810,7 +897,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     setSavingStaffNote(true);
     setStaffNoteError(null);
     try {
-      const token = await getFreshToken();
+      const token = getStaffToken();
       if (!token) return;
 
       const res = await fetch(
@@ -864,7 +951,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     setDeletingNoteId(noteId);
     setStaffNoteError(null);
     try {
-      const token = await getFreshToken();
+      const token = getStaffToken();
       if (!token) return;
       const res = await fetch(
         `/api/staff/orders/${encodeURIComponent(orderRef)}/notes/${noteId}`,
@@ -1017,7 +1104,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     setPortalError(null);
     setCategoryFeedback(null);
     try {
-      const token = await getFreshToken();
+      const token = getStaffToken();
       if (!token) return;
       const res = await fetch('/api/staff/categories', {
         method: 'POST',
@@ -1054,7 +1141,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     setPortalError(null);
     setCategoryFeedback(null);
     try {
-      const token = await getFreshToken();
+      const token = getStaffToken();
       if (!token) return;
       const res = await fetch(`/api/staff/categories/${encodeURIComponent(cat.slug)}`, {
         method: 'PATCH',
@@ -1086,7 +1173,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     setPortalError(null);
     setCategoryFeedback(null);
     try {
-      const token = await getFreshToken();
+      const token = getStaffToken();
       if (!token) return;
       const res = await fetch(`/api/staff/categories/${encodeURIComponent(cat.slug)}`, {
         method: 'DELETE',
@@ -1133,7 +1220,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         reader.readAsDataURL(file);
       });
 
-      const token = await getFreshToken();
+      const token = getStaffToken();
       if (!token) return;
 
       const res = await fetch('/api/staff/products/upload-image', {
@@ -1194,7 +1281,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     setSavingProduct(true);
     setProductModalError(null);
     try {
-      const token = await getFreshToken();
+      const token = getStaffToken();
       if (!token) return;
 
       if (isCreatingProduct) {
@@ -1271,7 +1358,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
     setQuickAdjustingId(product.id);
     setPortalError(null);
     try {
-      const token = await getFreshToken();
+      const token = getStaffToken();
       if (!token) return;
       const res = await fetch(`/api/staff/products/${encodeURIComponent(product.id)}`, {
         method: 'PATCH',
@@ -1348,153 +1435,232 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
         </button>
       </div>
 
-      {/* State 1: Auth loading or checking staff record */}
+      {/* State 1: Checking staff portal auth status */}
       {!authReady || staffLoading ? (
         <div className="rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-[#13161C] p-12 flex flex-col items-center justify-center gap-3 text-sm text-[#525866] dark:text-[#9CA3AF]">
           <Loader2 className="h-6 w-6 animate-spin text-[#1D4ED8] dark:text-[#60A5FA]" />
           <span>
             {lang === 'ar'
-              ? 'جاري التحقق من حساب الموظف وصلاحياته...'
-              : 'Verifying employee Google session & permissions...'}
+              ? 'جاري تجهيز بوابة الموظفين والتحقق من الجلسة...'
+              : 'Loading staff portal & verifying session...'}
           </span>
         </div>
-      ) : !user ? (
-        /* State 2: Dedicated Google Sign-In Gate for Staff */
-        <div className="mx-auto max-w-lg rounded-2xl border border-black/[0.08] dark:border-white/[0.1] bg-white dark:bg-[#13161C] p-8 sm:p-10 text-center space-y-6">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[#1D4ED8]/10 text-[#1D4ED8] dark:bg-[#3B82F6]/15 dark:text-[#60A5FA]">
-            <ShieldCheck className="h-6 w-6" aria-hidden="true" />
-          </div>
-
-          <div className="space-y-2">
-            <h2 className="font-editorial text-2xl font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
-              {lang === 'ar' ? 'تسجيل دخول الموظفين' : 'Employee Google Sign-In'}
-            </h2>
-            <p className="text-sm leading-relaxed text-[#525866] dark:text-[#9CA3AF]">
-              {lang === 'ar'
-                ? 'سجل دخول بحساب جوجل المعتمد من الإدارة عشان تتابع الأوردرات، تحدث حالات التوصيل، وتشوف إجمالي المبيعات حسب صلاحياتك.'
-                : 'Sign in with your authorized Google account to track orders, update fulfillment stages, and view total sales according to your assigned permissions.'}
-            </p>
-          </div>
-
-          {authError && (
-            <div className="rounded-lg border border-red-300 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-700 dark:text-red-300">
-              {authError}
-            </div>
-          )}
-
-          <button
-            type="button"
-            onClick={() => void signInWithGoogle()}
-            className="inline-flex h-12 w-full items-center justify-center gap-2.5 rounded-xl bg-[#0F1115] px-6 text-sm font-semibold text-white hover:bg-[#1D4ED8] dark:bg-[#F4F5F7] dark:text-[#0B0D11] dark:hover:bg-[#60A5FA] transition-colors cursor-pointer"
+      ) : !staffToken || !staffProfile ? (
+        needsInitialSetup ? (
+          /* State 2A: First-Run Initial Administrator Setup */
+          <form
+            onSubmit={(e) => void handleInitialSetupSubmit(e)}
+            className="mx-auto max-w-lg rounded-2xl border border-black/[0.08] dark:border-white/[0.1] bg-white dark:bg-[#13161C] p-8 sm:p-10 space-y-5"
           >
-            <LogIn className="h-4 w-4 shrink-0" aria-hidden="true" />
-            <span>
-              {lang === 'ar' ? 'تسجيل الدخول بحساب جوجل' : 'Continue with Google Account'}
-            </span>
-          </button>
-
-          <p className="text-xs text-[#525866] dark:text-[#9CA3AF]">
-            {lang === 'ar'
-              ? 'الوصول مقتصر على الحسابات المفعّلة في سجل الصلاحيات.'
-              : 'Access is restricted to verified accounts enabled in the staff permissions registry.'}
-          </p>
-        </div>
-      ) : !staffProfile ? (
-        /* State 3: Connection/Server Error vs Unauthorized Account */
-        <div className="mx-auto max-w-lg rounded-2xl border border-black/[0.08] dark:border-white/[0.1] bg-white dark:bg-[#13161C] p-8 sm:p-10 text-center space-y-5">
-          <div
-            className={`mx-auto flex h-12 w-12 items-center justify-center rounded-xl ${
-              portalError
-                ? 'bg-red-500/10 text-red-600 dark:text-red-400'
-                : 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
-            }`}
-          >
-            <ShieldCheck className="h-6 w-6" aria-hidden="true" />
-          </div>
-
-          <div className="space-y-2">
-            <h2 className="font-editorial text-xl font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
-              {dbNotConfigured
-                ? lang === 'ar'
-                  ? 'قاعدة البيانات غير مربوطة على الاستضافة'
-                  : 'Database Not Configured on Server'
-                : portalError
-                ? lang === 'ar'
-                  ? 'تعذر التحقق من صلاحيات الموظف مؤقتاً'
-                  : 'Unable to Verify Staff Access Right Now'
-                : lang === 'ar'
-                ? 'الحساب ده معلهوش صلاحيات موظف'
-                : 'No Active Staff Permissions'}
-            </h2>
-            <p className="text-sm text-[#525866] dark:text-[#9CA3AF]">
-              {lang === 'ar'
-                ? 'أنت مسجل دخول بالإيميل:'
-                : 'You are currently signed in as:'}{' '}
-              <strong className="text-[#0F1115] dark:text-[#F4F5F7]" dir="ltr">
-                {verifiedEmail || user.email}
-              </strong>
-            </p>
-            <p className="text-xs leading-relaxed text-[#525866] dark:text-[#9CA3AF]">
-              {dbNotConfigured
-                ? lang === 'ar'
-                  ? 'خادم الموقع على Vercel يعمل، لكن لم يتم ربط قاعدة بيانات PostgreSQL بعد. أضف متغير DATABASE_URL في Vercel Environment Variables ثم أعد النشر (Redeploy).'
-                  : 'The Vercel API server is running, but no PostgreSQL database is connected yet. Add DATABASE_URL in Vercel Environment Variables and redeploy.'
-                : portalError
-                ? lang === 'ar'
-                  ? 'الحساب مسجل دخول حالياً، لكن تعذر استلام رد سليم من الخادم (قد يكون الخادم أُعيد تشغيله للتو أو تحتاج الصفحة لإعادة تحميل).'
-                  : 'Your Google account is signed in, but the staff server did not return a valid response. Try refreshing the page or retrying.'
-                : lang === 'ar'
-                ? 'اطلب من مدير النظام يضيف إيميل جوجل ده من تبويب إدارة الموظفين ويفعّل لك الصلاحيات المناسبة.'
-                : 'Ask an administrator to authorize this Google email in the Staff Permissions panel.'}
-            </p>
-          </div>
-
-          {portalError && (
-            <div className="rounded-lg border border-red-300 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-700 dark:text-red-300">
-              {portalError}
+            <div className="text-center space-y-2">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[#1D4ED8]/10 text-[#1D4ED8] dark:bg-[#3B82F6]/15 dark:text-[#60A5FA]">
+                <ShieldCheck className="h-6 w-6" aria-hidden="true" />
+              </div>
+              <h2 className="font-editorial text-2xl font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
+                {lang === 'ar' ? 'إعداد حساب المدير العام لأول مرة' : 'Initial Administrator Setup'}
+              </h2>
+              <p className="text-sm leading-relaxed text-[#525866] dark:text-[#9CA3AF]">
+                {lang === 'ar'
+                  ? 'أنشئ اسم المستخدم وكلمة مرور المدير العام للتحكم الكامل في الطلبات والمنتجات وإضافة حسابات الموظفين.'
+                  : 'Create the primary administrator username and password to manage orders, inventory, and staff accounts.'}
+              </p>
             </div>
-          )}
 
-          <div className="flex flex-wrap gap-3 pt-2">
-            <button
-              type="button"
-              onClick={() => void logout()}
-              className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-black/[0.12] dark:border-white/[0.14] px-4 text-xs font-semibold text-[#0F1115] dark:text-[#F4F5F7] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] cursor-pointer whitespace-nowrap"
-            >
-              <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>{lang === 'ar' ? 'تسجيل الخروج' : 'Sign Out'}</span>
-            </button>
-            {portalError && needsNewTab && (
-              <a
-                href={typeof window !== 'undefined' ? window.location.href : '#/staff'}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-[#1D4ED8]/30 bg-[#1D4ED8]/10 px-4 text-xs font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:bg-[#1D4ED8]/15 whitespace-nowrap"
-              >
-                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>{lang === 'ar' ? 'فتح في نافذة جديدة' : 'Open in New Tab'}</span>
-              </a>
+            <div className="space-y-3.5 text-start">
+              <div>
+                <label className="block text-xs font-medium text-[#525866] dark:text-[#9CA3AF]">
+                  {lang === 'ar' ? 'اسم المستخدم للمدير العام' : 'Admin Username'}
+                </label>
+                <input
+                  type="text"
+                  required
+                  dir="auto"
+                  autoComplete="username"
+                  value={setupUsername}
+                  onChange={(e) => {
+                    setSetupUsername(e.target.value);
+                    if (setupLocalError) setSetupLocalError(null);
+                  }}
+                  placeholder="admin"
+                  className="mt-1.5 h-11 w-full rounded-lg border border-black/[0.12] dark:border-white/[0.14] bg-transparent px-3.5 text-sm text-[#0F1115] dark:text-[#F4F5F7] focus:border-[#1D4ED8] focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-[#525866] dark:text-[#9CA3AF]">
+                  {lang === 'ar' ? 'الاسم المعروض (اختياري)' : 'Display Name (optional)'}
+                </label>
+                <input
+                  type="text"
+                  value={setupDisplayName}
+                  onChange={(e) => setSetupDisplayName(e.target.value)}
+                  placeholder={lang === 'ar' ? 'مثال: محمد تامر' : 'e.g. Mohamed Tamer'}
+                  className="mt-1.5 h-11 w-full rounded-lg border border-black/[0.12] dark:border-white/[0.14] bg-transparent px-3.5 text-sm text-[#0F1115] dark:text-[#F4F5F7] focus:border-[#1D4ED8] focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-[#525866] dark:text-[#9CA3AF]">
+                  {lang === 'ar' ? 'كلمة المرور (6 أحرف على الأقل)' : 'Password (min 6 characters)'}
+                </label>
+                <div className="relative mt-1.5">
+                  <input
+                    type={showSetupPassword ? 'text' : 'password'}
+                    required
+                    minLength={6}
+                    dir="ltr"
+                    autoComplete="new-password"
+                    value={setupPassword}
+                    onChange={(e) => {
+                      setSetupPassword(e.target.value);
+                      if (setupLocalError) setSetupLocalError(null);
+                    }}
+                    className="h-11 w-full rounded-lg border border-black/[0.12] dark:border-white/[0.14] bg-transparent px-3.5 pe-10 text-sm text-[#0F1115] dark:text-[#F4F5F7] focus:border-[#1D4ED8] focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSetupPassword((v) => !v)}
+                    aria-label={showSetupPassword ? 'Hide password' : 'Show password'}
+                    className="absolute inset-y-0 end-2 inline-flex items-center px-2 text-[#525866] dark:text-[#9CA3AF] cursor-pointer"
+                  >
+                    {showSetupPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-[#525866] dark:text-[#9CA3AF]">
+                  {lang === 'ar' ? 'تأكيد كلمة المرور' : 'Confirm Password'}
+                </label>
+                <input
+                  type={showSetupPassword ? 'text' : 'password'}
+                  required
+                  minLength={6}
+                  dir="ltr"
+                  autoComplete="new-password"
+                  value={setupConfirmPassword}
+                  onChange={(e) => {
+                    setSetupConfirmPassword(e.target.value);
+                    if (setupLocalError) setSetupLocalError(null);
+                  }}
+                  className="mt-1.5 h-11 w-full rounded-lg border border-black/[0.12] dark:border-white/[0.14] bg-transparent px-3.5 text-sm text-[#0F1115] dark:text-[#F4F5F7] focus:border-[#1D4ED8] focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {(setupLocalError || authError) && (
+              <div className="rounded-lg border border-red-300 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-700 dark:text-red-300">
+                {setupLocalError || authError}
+              </div>
             )}
-            {portalError && (
-              <button
-                type="button"
-                onClick={() => window.location.reload()}
-                className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg border border-[#1D4ED8]/30 bg-[#1D4ED8]/10 px-4 text-xs font-semibold text-[#1D4ED8] dark:text-[#60A5FA] hover:bg-[#1D4ED8]/15 cursor-pointer whitespace-nowrap"
-              >
-                <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>{lang === 'ar' ? 'تحديث الصفحة' : 'Refresh Page'}</span>
-              </button>
-            )}
+
             <button
-              type="button"
-              onClick={() => void loadStaffProfile()}
-              className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg bg-[#1D4ED8] px-4 text-xs font-semibold text-white hover:bg-[#1E40AF] cursor-pointer whitespace-nowrap"
+              type="submit"
+              disabled={setupSubmitting}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#1D4ED8] px-6 text-sm font-semibold text-white hover:bg-[#1E40AF] disabled:opacity-60 transition-colors cursor-pointer"
             >
-              <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>{lang === 'ar' ? 'إعادة التحقق' : 'Re-check Access'}</span>
+              {setupSubmitting ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
+              )}
+              <span>
+                {lang === 'ar' ? 'حفظ والدخول للوحة الإدارة' : 'Complete Setup & Enter Portal'}
+              </span>
             </button>
-          </div>
-        </div>
+          </form>
+        ) : (
+          /* State 2B: Staff Username & Password Login Gate */
+          <form
+            onSubmit={(e) => void handleLoginSubmit(e)}
+            className="mx-auto max-w-lg rounded-2xl border border-black/[0.08] dark:border-white/[0.1] bg-white dark:bg-[#13161C] p-8 sm:p-10 space-y-5"
+          >
+            <div className="text-center space-y-2">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[#1D4ED8]/10 text-[#1D4ED8] dark:bg-[#3B82F6]/15 dark:text-[#60A5FA]">
+                <Lock className="h-6 w-6" aria-hidden="true" />
+              </div>
+              <h2 className="font-editorial text-2xl font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
+                {lang === 'ar' ? 'تسجيل دخول الموظفين' : 'Staff Portal Sign-In'}
+              </h2>
+              <p className="text-sm leading-relaxed text-[#525866] dark:text-[#9CA3AF]">
+                {lang === 'ar'
+                  ? 'أدخل اسم المستخدم وكلمة المرور المعتمدين من الإدارة لمتابعة الأوردرات والمخزون والمبيعات.'
+                  : 'Sign in with your assigned staff username and password to manage orders, inventory, and sales.'}
+              </p>
+            </div>
+
+            <div className="space-y-3.5 text-start">
+              <div>
+                <label className="block text-xs font-medium text-[#525866] dark:text-[#9CA3AF]">
+                  {lang === 'ar' ? 'اسم المستخدم' : 'Username'}
+                </label>
+                <input
+                  type="text"
+                  required
+                  dir="auto"
+                  autoComplete="username"
+                  value={loginUsername}
+                  onChange={(e) => setLoginUsername(e.target.value)}
+                  placeholder="admin"
+                  className="mt-1.5 h-11 w-full rounded-lg border border-black/[0.12] dark:border-white/[0.14] bg-transparent px-3.5 text-sm text-[#0F1115] dark:text-[#F4F5F7] focus:border-[#1D4ED8] focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-[#525866] dark:text-[#9CA3AF]">
+                  {lang === 'ar' ? 'كلمة المرور' : 'Password'}
+                </label>
+                <div className="relative mt-1.5">
+                  <input
+                    type={showLoginPassword ? 'text' : 'password'}
+                    required
+                    dir="ltr"
+                    autoComplete="current-password"
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="h-11 w-full rounded-lg border border-black/[0.12] dark:border-white/[0.14] bg-transparent px-3.5 pe-10 text-sm text-[#0F1115] dark:text-[#F4F5F7] focus:border-[#1D4ED8] focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowLoginPassword((v) => !v)}
+                    aria-label={showLoginPassword ? 'Hide password' : 'Show password'}
+                    className="absolute inset-y-0 end-2 inline-flex items-center px-2 text-[#525866] dark:text-[#9CA3AF] cursor-pointer"
+                  >
+                    {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {(authError || portalError) && (
+              <div className="rounded-lg border border-red-300 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-700 dark:text-red-300">
+                {authError || portalError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loginSubmitting}
+              className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#0F1115] px-6 text-sm font-semibold text-white hover:bg-[#1D4ED8] dark:bg-[#F4F5F7] dark:text-[#0B0D11] dark:hover:bg-[#60A5FA] disabled:opacity-60 transition-colors cursor-pointer"
+            >
+              {loginSubmitting ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <LogIn className="h-4 w-4 shrink-0" aria-hidden="true" />
+              )}
+              <span>
+                {lang === 'ar' ? 'دخول لبوابة الموظفين' : 'Sign In to Staff Portal'}
+              </span>
+            </button>
+
+            <p className="text-center text-xs text-[#525866] dark:text-[#9CA3AF]">
+              {lang === 'ar'
+                ? 'الوصول مقتصر على الحسابات المفعّلة في سجل الصلاحيات.'
+                : 'Access is restricted to active accounts enabled in the staff permissions registry.'}
+            </p>
+          </form>
+        )
       ) : (
         /* State 4: Authenticated Active Staff Dashboard */
         <div className="space-y-8">
@@ -1503,10 +1669,10 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-center gap-2 text-xs text-[#525866] dark:text-[#9CA3AF]">
                 <span className="font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
-                  {staffProfile.displayName || user.displayName || staffProfile.email}
+                  {staffProfile.displayName || staffProfile.username}
                 </span>
                 <span aria-hidden="true">·</span>
-                <span dir="ltr">{staffProfile.email}</span>
+                <span dir="ltr" className="font-mono">@{staffProfile.username}</span>
                 <span aria-hidden="true">·</span>
                 <span className="font-semibold text-[#1D4ED8] dark:text-[#60A5FA]">
                   {ROLE_PRESETS[staffProfile.role]?.[lang] || staffProfile.role}
@@ -1528,6 +1694,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
               <button
                 type="button"
                 onClick={() => {
+                  void verifyStaffSession();
                   void loadDashboardData(staffProfile);
                   if (staffProfile.canManageProducts) void loadCatalogProducts(staffProfile);
                   if (staffProfile.canManageStaff) void loadTeamMembers(staffProfile);
@@ -1543,7 +1710,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
               </button>
               <button
                 type="button"
-                onClick={() => void logout()}
+                onClick={logoutStaff}
                 className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-black/[0.12] dark:border-white/[0.14] px-3 text-xs font-semibold text-[#525866] hover:text-red-600 dark:text-[#9CA3AF] dark:hover:text-red-400 transition-colors cursor-pointer whitespace-nowrap"
               >
                 <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
@@ -2353,22 +2520,47 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
               >
                 <div className="flex items-center gap-2 text-sm font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
                   <UserPlus className="h-4 w-4 text-[#1D4ED8] dark:text-[#60A5FA]" aria-hidden="true" />
-                  <span>{lang === 'ar' ? 'إضافة موظف وتحديد صلاحياته' : 'Authorize Staff Member'}</span>
+                  <span>{lang === 'ar' ? 'إضافة موظف وتحديد كلمة المرور' : 'Add Staff Account & Permissions'}</span>
                 </div>
 
                 <div>
                   <label className="block text-xs font-medium text-[#525866] dark:text-[#9CA3AF]">
-                    {lang === 'ar' ? 'إيميل حساب جوجل' : 'Google Email Address'}
+                    {lang === 'ar' ? 'اسم المستخدم للدخول' : 'Staff Username'}
                   </label>
                   <input
-                    type="email"
+                    type="text"
                     required
                     dir="ltr"
-                    value={newEmail}
-                    onChange={(e) => setNewEmail(e.target.value)}
-                    placeholder="employee@gmail.com"
+                    value={newUsername}
+                    onChange={(e) => setNewUsername(e.target.value)}
+                    placeholder="sara.ops"
                     className="mt-1.5 h-10 w-full rounded-lg border border-black/[0.12] dark:border-white/[0.14] bg-transparent px-3 text-xs text-[#0F1115] dark:text-[#F4F5F7] focus:border-[#1D4ED8] focus:outline-none"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-[#525866] dark:text-[#9CA3AF]">
+                    {lang === 'ar' ? 'كلمة المرور (6 أحرف على الأقل)' : 'Password (min 6 chars)'}
+                  </label>
+                  <div className="relative mt-1.5">
+                    <input
+                      type={showNewPassword ? 'text' : 'password'}
+                      minLength={6}
+                      dir="ltr"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder={lang === 'ar' ? 'مطلوبة للحساب الجديد' : 'Required for new staff'}
+                      className="h-10 w-full rounded-lg border border-black/[0.12] dark:border-white/[0.14] bg-transparent px-3 pe-9 text-xs text-[#0F1115] dark:text-[#F4F5F7] focus:border-[#1D4ED8] focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword((v) => !v)}
+                      aria-label={showNewPassword ? 'Hide password' : 'Show password'}
+                      className="absolute inset-y-0 end-2 inline-flex items-center px-1.5 text-[#525866] dark:text-[#9CA3AF] cursor-pointer"
+                    >
+                      {showNewPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    </button>
+                  </div>
                 </div>
 
                 <div>
@@ -2473,7 +2665,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
                   className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-[#1D4ED8] px-4 text-xs font-semibold text-white hover:bg-[#1E40AF] disabled:opacity-60 transition-colors cursor-pointer"
                 >
                   {savingMember && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  <span>{lang === 'ar' ? 'حفظ وإضافة الموظف' : 'Save Staff Permissions'}</span>
+                  <span>{lang === 'ar' ? 'حفظ وإضافة الموظف' : 'Save Staff Account'}</span>
                 </button>
               </form>
 
@@ -2513,13 +2705,17 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
                             {lang === 'ar' ? 'تفعيل' : 'Active'}
                           </th>
                           <th className="px-3 py-3 font-semibold text-center whitespace-nowrap">
+                            {lang === 'ar' ? 'كلمة المرور' : 'Password'}
+                          </th>
+                          <th className="px-3 py-3 font-semibold text-center whitespace-nowrap">
                             {lang === 'ar' ? 'حذف' : 'Remove'}
                           </th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-black/[0.06] dark:divide-white/[0.07]">
                         {members.map((member) => {
-                          const lockedAdmin = member.isBootstrapAdmin;
+                          const lockedAdmin = member.isPrimaryAdmin;
+                          const isEditingPwd = resetMemberId === member.id;
                           return (
                             <tr
                               key={member.id}
@@ -2527,15 +2723,15 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
                             >
                               <td className="px-4 py-3">
                                 <p className="font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
-                                  {member.displayName || member.email.split('@')[0]}
+                                  {member.displayName || member.username}
                                   {lockedAdmin && (
                                     <span className="ms-1.5 text-[11px] font-medium text-[#1D4ED8] dark:text-[#60A5FA]">
                                       ({lang === 'ar' ? 'أساسي' : 'Primary'})
                                     </span>
                                   )}
                                 </p>
-                                <p className="text-[11px] text-[#525866] dark:text-[#9CA3AF]" dir="ltr">
-                                  {member.email}
+                                <p className="text-[11px] font-mono text-[#525866] dark:text-[#9CA3AF]" dir="ltr">
+                                  @{member.username}
                                 </p>
                               </td>
 
@@ -2584,10 +2780,59 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
                                 </td>
                               ))}
 
+                              <td className="px-3 py-3 text-center whitespace-nowrap">
+                                {isEditingPwd ? (
+                                  <div className="inline-flex items-center gap-1">
+                                    <input
+                                      type="password"
+                                      minLength={6}
+                                      dir="ltr"
+                                      value={resetPasswordValue}
+                                      onChange={(e) => setResetPasswordValue(e.target.value)}
+                                      placeholder="••••••"
+                                      className="h-7 w-24 rounded border border-black/[0.15] dark:border-white/[0.15] bg-transparent px-2 text-[11px] text-[#0F1115] dark:text-[#F4F5F7]"
+                                    />
+                                    <button
+                                      type="button"
+                                      disabled={savingResetPassword}
+                                      onClick={() => void handleResetMemberPassword(member)}
+                                      aria-label={lang === 'ar' ? 'حفظ' : 'Save'}
+                                      className="inline-flex h-7 w-7 items-center justify-center rounded bg-[#1D4ED8] text-white cursor-pointer"
+                                    >
+                                      <Check className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setResetMemberId(null);
+                                        setResetPasswordValue('');
+                                      }}
+                                      aria-label={lang === 'ar' ? 'إلغاء' : 'Cancel'}
+                                      className="inline-flex h-7 w-7 items-center justify-center rounded border border-black/[0.12] dark:border-white/[0.14] text-[#525866] cursor-pointer"
+                                    >
+                                      <X className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setResetMemberId(member.id);
+                                      setResetPasswordValue('');
+                                    }}
+                                    title={lang === 'ar' ? 'تغيير كلمة المرور' : 'Reset password'}
+                                    className="inline-flex h-8 items-center gap-1 rounded-md border border-black/[0.1] dark:border-white/[0.12] px-2 text-[11px] font-medium text-[#525866] hover:border-[#1D4ED8] hover:text-[#1D4ED8] dark:text-[#9CA3AF] dark:hover:text-[#60A5FA] cursor-pointer"
+                                  >
+                                    <KeyRound className="h-3 w-3" aria-hidden="true" />
+                                    <span>{lang === 'ar' ? 'تغيير' : 'Reset'}</span>
+                                  </button>
+                                )}
+                              </td>
+
                               <td className="px-3 py-3 text-center">
                                 <button
                                   type="button"
-                                  disabled={lockedAdmin || member.email === staffProfile.email}
+                                  disabled={lockedAdmin || member.username === staffProfile.username}
                                   onClick={() => void handleDeleteMember(member)}
                                   aria-label={lang === 'ar' ? 'حذف موظف' : 'Delete staff'}
                                   className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[#525866] hover:text-red-600 dark:text-[#9CA3AF] dark:hover:text-red-400 disabled:opacity-30 cursor-pointer"
@@ -2906,7 +3151,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
                         <div className="flex items-center justify-between gap-2 text-[11px] text-[#525866] dark:text-[#9CA3AF]">
                           <div className="flex flex-wrap items-center gap-1.5">
                             <span className="font-semibold text-[#0F1115] dark:text-[#F4F5F7]">
-                              {entry.staffName || entry.staffEmail.split('@')[0]}
+                              {entry.staffName || entry.staffUsername || entry.staffEmail || 'staff'}
                             </span>
                             <span aria-hidden="true">·</span>
                             <span className="tabular-nums">{formatDate(entry.createdAt)}</span>
