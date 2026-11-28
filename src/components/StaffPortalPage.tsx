@@ -226,6 +226,19 @@ async function parseApiJson<T>(res: Response, lang: Language): Promise<T> {
   }
 }
 
+function formatAuthError(raw: string | null, lang: Language): string | null {
+  if (!raw) return null;
+  if (lang === 'ar') {
+    if (raw === 'Invalid username or password.') {
+      return 'اسم المستخدم أو كلمة المرور غير صحيحة.';
+    }
+    if (raw.includes('No administrator account is configured')) {
+      return 'هذا الخادم لا يحتوي على حساب مدير محفوظ حالياً. أكمل الإعداد الآن أو أضف STAFF_ADMIN_USERNAME و STAFF_ADMIN_PASSWORD في إعدادات Vercel ليكون الدخول دائماً.';
+    }
+  }
+  return raw;
+}
+
 export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: StaffPortalPageProps) {
   const {
     authReady,
@@ -1550,7 +1563,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
 
             {(setupLocalError || authError) && (
               <div className="rounded-lg border border-red-300 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-700 dark:text-red-300">
-                {setupLocalError || authError}
+                {setupLocalError || formatAuthError(authError, lang)}
               </div>
             )}
 
@@ -1635,7 +1648,7 @@ export function StaffPortalPage({ lang, onBackToStore, onCatalogUpdated }: Staff
 
             {(authError || portalError) && (
               <div className="rounded-lg border border-red-300 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-700 dark:text-red-300">
-                {authError || portalError}
+                {formatAuthError(authError, lang) || portalError}
               </div>
             )}
 

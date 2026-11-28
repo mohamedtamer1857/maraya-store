@@ -13,6 +13,24 @@ function getSigningSecret(): string {
   if (envSecret.length >= 16) {
     return envSecret;
   }
+
+  const deploymentEntropy = [
+    process.env.VERCEL_PROJECT_ID,
+    process.env.VERCEL_ORG_ID,
+    process.env.STAFF_ADMIN_USERNAME,
+    process.env.STAFF_ADMIN_PASSWORD,
+    process.env.GEMINI_API_KEY,
+  ]
+    .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+    .join('|');
+
+  if (deploymentEntropy) {
+    return crypto
+      .createHash('sha256')
+      .update(deploymentEntropy)
+      .digest('hex');
+  }
+
   if (!global._marayaRuntimeSecret) {
     global._marayaRuntimeSecret = crypto.randomBytes(32).toString('hex');
   }

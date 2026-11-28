@@ -411,6 +411,15 @@ export function createApiApp() {
 
       const staff = await authenticateStaffCredentials(username, password);
       if (!staff) {
+        const status = getStaffAuthStatus();
+        if (status.needsInitialSetup) {
+          res.status(409).json({
+            needsInitialSetup: true,
+            defaultUsername: status.defaultUsername,
+            error: 'No administrator account is configured on this server instance yet.',
+          });
+          return;
+        }
         res.status(401).json({ error: 'Invalid username or password.' });
         return;
       }

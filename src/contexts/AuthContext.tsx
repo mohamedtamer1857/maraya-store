@@ -166,11 +166,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
 
         const raw = await res.text();
-        let data: { token?: string; staff?: StaffProfile; error?: string } = {};
+        let data: {
+          token?: string;
+          staff?: StaffProfile;
+          error?: string;
+          needsInitialSetup?: boolean;
+          defaultUsername?: string;
+        } = {};
         try {
           data = raw ? (JSON.parse(raw) as typeof data) : {};
         } catch {
           setAuthError(`Unexpected response from staff server (HTTP ${res.status}).`);
+          return false;
+        }
+
+        if (data.needsInitialSetup || res.status === 409) {
+          setNeedsInitialSetup(true);
+          if (typeof data.defaultUsername === 'string' && data.defaultUsername.trim()) {
+            setDefaultAdminUsername(data.defaultUsername.trim());
+          }
+          setAuthError(
+            data.error || 'No administrator account is configured on this server instance yet.'
+          );
           return false;
         }
 
